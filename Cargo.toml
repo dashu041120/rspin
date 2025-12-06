@@ -1,0 +1,40 @@
+[package]
+name = "rspin"
+version = "0.1.0"
+edition = "2021"
+description = "A desktop sticky image viewer for Wayland"
+authors = ["Your Name"]
+license = "MIT"
+
+[dependencies]
+# Wayland client toolkit
+smithay-client-toolkit = "0.19"
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
+
+# GPU rendering
+wgpu = "0.19"
+raw-window-handle = "0.6"
+pollster = "0.3"
+bytemuck = { version = "1.14", features = ["derive"] }
+
+# Image handling
+image = "0.25"
+
+# Command line parsing
+clap = { version = "4", features = ["derive"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# For reading from stdin
+atty = "0.2"
+
+# Memory mapping for shared memory
+memmap2 = "0.9"
