@@ -4,19 +4,15 @@ A desktop sticky image viewer for Wayland compositors.
 
 ## Features
 
-- Display images in a floating, always-on-top overlay window
-- Support for multiple image formats (PNG, JPEG, GIF, WebP, BMP, etc.)
-- Customizable opacity (transparency)
-- Image scaling
+- Always-on-top Wayland overlay window implemented with `wlr-layer-shell`
+- GPU rendering via `wgpu` with a CPU fallback that shares the same layer-shell surface
+- Context menu rendered directly on the GPU (no more CPU fallback/blur when it is open)
+- Auto-limits the initial size to **10% of the screen area** and never allows scaling beyond 100% of the active display
+- Transparent window with scroll-wheel opacity control
 - Input from file path or stdin pipe
-- **Interactive controls**:
-  - Drag to move window
-  - Drag edges/corners to resize
-  - Scroll wheel to adjust opacity
-  - Double-click to close
-  - Right-click context menu
-  - Copy image to clipboard (via wl-copy or xclip)
-- Auto-limits initial size to 20% of screen
+- Emoji-enriched context menu with quick actions (close, copy, opacity ±, scale toggle)
+- Copy-to-clipboard using `wl-copy` or `xclip`
+- Supports PNG, JPEG, GIF, WebP, BMP, ICO, TIFF out of the box through the `image` crate
 
 ## Requirements
 
@@ -48,7 +44,7 @@ cat image.png | rspin
 grim -g "$(slurp)" - | rspin --opacity 0.9
 ```
 
-### Options
+### Command line reference
 
 ```
 Usage: rspin [OPTIONS] [IMAGE]
@@ -57,16 +53,16 @@ Arguments:
   [IMAGE]  Path to the image file (can also be provided via stdin pipe)
 
 Options:
-  -o, --opacity <OPACITY>    Opacity of the window (0.0 - 1.0) [default: 1.0]
-  -x, --pos-x <POS_X>        Initial X position of the window
-  -y, --pos-y <POS_Y>        Initial Y position of the window
-  -s, --scale <SCALE>        Scale factor for the image [default: 1.0]
-      --gpu                  Use GPU rendering (default: true)
-      --no-gpu               Use CPU rendering with layer-shell
-      --app-id <APP_ID>      Custom app-id for window rules [default: rspin]
-  -h, --help                 Print help
-  -V, --version              Print version
+  -o, --opacity <VALUE>   Window opacity (0.0 - 1.0) [default: 1.0]
+  -x, --pos-x <PX>        Initial X position (optional)
+  -y, --pos-y <PX>        Initial Y position (optional)
+  -s, --scale <FACTOR>    Scale image before displaying [default: 1.0]
+      --cpu               Force CPU rendering (GPU is enabled by default)
+  -h, --help              Print help
+  -V, --version           Print version
 ```
+
+GPU mode is the default and keeps the entire rendering path on the GPU (including the context menu). Pass `--cpu` if you need the shared-memory renderer instead.
 
 ## Configuration for niri
 
@@ -123,46 +119,17 @@ When resizing the window:
 
 During resize operations, a fast preview is shown for smooth interaction. High-quality bilinear interpolation is applied when you release the mouse button.
 
-## Floating Overlay Window
+## Wayland overlay mode
 
-rspin supports two modes for creating floating overlay windows:
+`rspin` always uses the Wayland **wlr-layer-shell** protocol via `smithay-client-toolkit`. The GPU backend (`wgpu`) renders directly into the layer surface; when `--cpu` is specified the same surface is painted through a shared-memory buffer. Because the menu is now drawn via a wgpu overlay, the GPU path never has to fall back to CPU just to show UI.
 
-### GPU Mode (Default) - For niri compositor
+## Rendering details
 
-Uses **winit + wgpu** for GPU-accelerated rendering. Requires a window rule in niri config:
-
-```kdl
-window-rule {
-    match app-id="^rspin$"
-    open-floating true
-}
-```
-
-Run with: `rspin image.png` (GPU is default)
-
-**Note**: Floating windows in niri only stay on top **within the current workspace**. When you switch workspaces, the window stays in its original workspace.
-
-### CPU Mode - For global overlay across all workspaces
-
-Uses **wlr-layer-shell** protocol to create a **true global overlay**:
-- Visible on **all workspaces** (global layer)
-- Always stays on top of all windows
-- Doesn't appear in taskbar or window lists
-- Can be positioned anywhere, even partially off-screen
-
-Run with: `rspin --no-gpu image.png`
-
-**Use this mode if you need the image to stay visible when switching workspaces.**
-
-## Performance Optimizations
-
-- **Mipmap Generation**: Automatically generates progressively half-sized versions (up to 8 levels)
-- **Smart Level Selection**: Chooses optimal mipmap level based on display size
-- **Fast Resize Preview**: Optimized nearest-neighbor scaling during active resizing
-- **Frame Rate Limiting**: Limits redraws to ~40fps during resize
-- **High-Quality Final Render**: Bilinear interpolation when resize completes
-- **Cached Rendering**: Caches scaled results to avoid redundant computation
-- **Buffer Size Limits**: Automatically limits window size to prevent memory errors (max 4096x4096)
+- Initial size is capped at 10% of the current display area and subsequent resizes are clamped to that display.
+- GPU rendering uses a single textured quad drawn via `wgpu`. The context menu is rendered into a small RGBA buffer, uploaded as an overlay texture, and composited with a viewport so that only the menu area is touched.
+- CPU rendering uses a `wl_shm` buffer. A cached scaled image is maintained only when running purely on the CPU; GPU mode disables the cache to save memory.
+- Only a handful of mipmap levels are produced (at most 4, stopping once the texture drops below 512 px) to reduce RAM.
+- During live resizing a fast nearest-neighbor path is used, while the steady-state image uses bilinear interpolation plus opacity blending.
 
 ## Supported Image Formats
 
@@ -173,6 +140,10 @@ Run with: `rspin --no-gpu image.png`
 - BMP
 - ICO
 - TIFF
+
+## Development
+
+See [DEVELOPMENT.md](DEVELOPMENT.md) for an overview of the architecture, dependencies, and tips for contributing or integrating with AI IDE tooling.
 
 ## License
 

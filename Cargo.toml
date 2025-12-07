@@ -38,3 +38,6 @@ atty = "0.2"
 
 # Memory mapping for shared memory
 memmap2 = "0.9"
+
+# Text rendering
+cosmic-text = "0.12"
