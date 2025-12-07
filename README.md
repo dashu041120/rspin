@@ -128,7 +128,7 @@ During resize operations, a fast preview is shown for smooth interaction. High-q
 - Initial size is capped at 10% of the current display area and subsequent resizes are clamped to that display.
 - GPU rendering uses a single textured quad drawn via `wgpu`. The context menu is rendered into a small RGBA buffer, uploaded as an overlay texture, and composited with a viewport so that only the menu area is touched.
 - CPU rendering uses a `wl_shm` buffer. A cached scaled image is maintained only when running purely on the CPU; GPU mode disables the cache to save memory.
-- Only a handful of mipmap levels are produced (at most 4, stopping once the texture drops below 512 px) to reduce RAM.
+- Memory optimizations: font system is lazy-loaded only when menu opens, image data is released after GPU upload, and texture uploads use chunked streaming to reduce peak memory.
 - During live resizing a fast nearest-neighbor path is used, while the steady-state image uses bilinear interpolation plus opacity blending.
 
 ## Supported Image Formats

@@ -15,12 +15,33 @@ pub struct ImageData {
     /// Image height in pixels
     pub height: u32,
     /// Raw RGBA pixel data (4 bytes per pixel)
+    /// Can be cleared after GPU upload to save memory
     pub rgba_data: Vec<u8>,
     /// Applied scale factor
     #[allow(dead_code)]
     pub scale: f32,
     /// Mipmap levels for faster downscaling (progressively half-sized versions)
+    /// Only generated when needed for CPU rendering
     pub mipmaps: Vec<MipmapLevel>,
+}
+
+impl ImageData {
+    /// Clear the raw image data to free memory (useful after GPU upload)
+    /// Returns the number of bytes freed
+    pub fn release_raw_data(&mut self) -> usize {
+        let freed = self.rgba_data.len() + self.mipmaps.iter().map(|m| m.data.len()).sum::<usize>();
+        self.rgba_data = Vec::new();
+        self.rgba_data.shrink_to_fit();
+        self.mipmaps.clear();
+        self.mipmaps.shrink_to_fit();
+        freed
+    }
+
+    /// Check if raw data is available
+    #[allow(dead_code)]
+    pub fn has_raw_data(&self) -> bool {
+        !self.rgba_data.is_empty()
+    }
 }
 
 /// A single mipmap level
@@ -64,8 +85,9 @@ pub fn load_image(args: &ParsedArgs) -> Result<ImageData> {
         pixel.swap(0, 2); // Swap R and B
     }
 
-    // Generate mipmaps for faster downscaling
-    let mipmaps = generate_mipmaps(width, height, &bgra_data);
+    // Mipmaps will be generated on demand if needed for CPU rendering
+    // GPU rendering uses hardware mipmapping, so we don't generate them by default
+    let mipmaps = Vec::new();
 
     Ok(ImageData {
         width,
@@ -76,7 +98,17 @@ pub fn load_image(args: &ParsedArgs) -> Result<ImageData> {
     })
 }
 
+/// Generate mipmaps on demand for CPU rendering
+#[allow(dead_code)]
+pub fn generate_mipmaps_if_needed(image: &mut ImageData) {
+    if !image.mipmaps.is_empty() {
+        return; // Already generated
+    }
+    image.mipmaps = generate_mipmaps(image.width, image.height, &image.rgba_data);
+}
+
 /// Generate mipmap levels (progressively half-sized versions)
+#[allow(dead_code)]
 fn generate_mipmaps(width: u32, height: u32, data: &[u8]) -> Vec<MipmapLevel> {
     let mut mipmaps = Vec::new();
     let mut current_width = width;

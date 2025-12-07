@@ -34,8 +34,14 @@ The exact versions are listed in `Cargo.toml`.
 - The GPU path draws a single textured quad. During resizing `wgpu_renderer::resize` reconfigures the swapchain, and `render()` composes the base texture plus a context-menu overlay using viewports.
 - The context menu is rasterized into a local BGRA buffer, converted to RGBA, and uploaded through `update_overlay_texture`. No CPU fallback is required for menus anymore.
 - CPU rendering uses `SlotPool` from `smithay-client-toolkit` to allocate wl_shm buffers. A cached scaled image is maintained only when running in CPU mode to avoid duplicating data alongside the GPU.
-- Mipmaps: only up to four levels are generated, and generation stops once the texture drops below 512 px. This keeps RAM usage predictable even for large images.
-- The initial window size is clamped to 10 % of the current screen area and never expands beyond 100 % of that screen. This prevents over-allocating GPU or CPU buffers.
+- Mipmaps are only generated on demand for CPU rendering. GPU mode skips mipmap generation entirely.
+- The initial window size is clamped to 10 % of the current screen area and never expands beyond 100 % of that screen. This prevents over-allocating GPU or CPU buffers.
+
+## Memory Management
+
+- **Font system**: Lazy-loaded on first menu open, released on menu close. Only loads `NotoSans-Regular.ttf` and `NotoColorEmoji.ttf` instead of scanning all system fonts.
+- **Image data**: Released from CPU after GPU texture upload via `ImageData::release_raw_data()`.
+- **Texture upload**: Uses chunked streaming (256 rows at a time) to minimize peak memory during color format conversion.
 
 ## Development Workflow
 

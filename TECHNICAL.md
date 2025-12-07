@@ -32,10 +32,29 @@ This document dives deeper into the implementation details of `rspin`, focusing 
 
 ## Resource Constraints
 
-- **Initial Size**: Limited to 10 % of the active screen area.  
+- **Initial Size**: Limited to 10 % of the active screen area.  
 - **Maximum Size**: Clamped to both the display dimensions and a hard cap (`MAX_SIZE`, currently 4096 px).  
-- **Mipmaps**: Only up to four levels are generated, stopping once the texture drops below 512 px, avoiding runaway memory usage for large inputs.  
+- **Mipmaps**: Only generated on demand for CPU rendering; GPU mode relies on hardware filtering.  
 - **Overlay Region**: Menu overlay textures are trimmed to the menu rectangle to avoid uploading the entire framebuffer each time.
+
+## Memory Optimizations
+
+`rspin` employs several strategies to minimize memory footprint:
+
+1. **Lazy Font Loading**: The font system (`cosmic-text`) is only initialized when the context menu is first opened, and released when the menu closes. This avoids loading thousands of font faces at startup.
+
+2. **Minimal Font Database**: Instead of scanning all system fonts, only specific fonts are loaded:
+   - Primary: `NotoSans-Regular.ttf` (~400KB)
+   - Emoji: `NotoColorEmoji.ttf` (~11MB) for menu icons
+   - Fallback to system fonts only if preferred fonts are unavailable
+
+3. **GPU Memory Release**: After uploading the image texture to GPU, the CPU-side image data (`rgba_data`) is released to free memory.
+
+4. **No Mipmaps in GPU Mode**: Mipmaps are only generated for CPU rendering; GPU mode uses hardware texture filtering.
+
+5. **Streaming Texture Upload**: Large textures are uploaded in 256-row chunks to reduce peak memory usage during the BGRA→RGBA conversion.
+
+6. **Cache Cleanup**: CPU rendering caches (`cached_scaled_image`, `SlotPool`) are cleared when GPU rendering is active.
 
 ## Modules at a Glance
 

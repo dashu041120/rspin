@@ -5,7 +5,7 @@ use crate::image_loader::ImageData;
 use crate::wgpu_renderer::WgpuRenderer;
 use anyhow::{Context, Result};
 use log::{debug, error, info, warn};
-use cosmic_text::{Attrs, AttrsOwned, Buffer, FontSystem, Metrics, Shaping, SwashCache, Color as TextColor, Family};
+use cosmic_text::{Attrs, AttrsOwned, Buffer, FontSystem, Metrics, Shaping, SwashCache, Color as TextColor, Family, fontdb};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
@@ -182,9 +182,9 @@ struct WaylandApp {
     gpu_renderer: Option<WgpuRenderer>,
     gpu_initialized: bool,
 
-    // Text rendering
-    font_system: FontSystem,
-    swash_cache: SwashCache,
+    // Text rendering (lazy loaded to save memory)
+    font_system: Option<FontSystem>,
+    swash_cache: Option<SwashCache>,
     menu_text_attrs: AttrsOwned,
     menu_text_metrics: Metrics,
 }
@@ -252,8 +252,8 @@ impl WaylandApp {
             use_gpu,
             gpu_renderer: None,
             gpu_initialized: false,
-            font_system: FontSystem::new(),
-            swash_cache: SwashCache::new(),
+            font_system: None,  // Lazy loaded when menu is first shown
+            swash_cache: None,
             menu_text_attrs,
             menu_text_metrics,
         }
@@ -341,7 +341,17 @@ impl WaylandApp {
             _ => {}
         }
         self.menu_state = MenuState::Hidden;
+        self.release_font_resources();
         self.needs_redraw = true;
+    }
+
+    /// Release font system resources to save memory
+    fn release_font_resources(&mut self) {
+        if self.font_system.is_some() {
+            info!("Releasing font system resources");
+            self.font_system = None;
+            self.swash_cache = None;
+        }
     }
 
     /// Toggle scale mode between keep aspect ratio and free scale
@@ -522,6 +532,14 @@ impl WaylandApp {
                 self.gpu_renderer = Some(renderer);
                 self.gpu_initialized = true;
                 info!("GPU renderer initialized successfully");
+
+                // Release raw image data to save memory since GPU has its own copy
+                let freed = self.image.release_raw_data();
+                info!("Released {} bytes of CPU image data after GPU upload", freed);
+
+                // Also clear CPU rendering caches
+                self.cached_scaled_image = None;
+                self.pool = None;
             }
             Err(e) => {
                 warn!("Failed to initialize GPU renderer: {:?}", e);
@@ -1114,27 +1132,88 @@ impl WaylandApp {
         text: &str,
         color: [u8; 4],
     ) {
-        let mut buffer = Buffer::new(&mut self.font_system, self.menu_text_metrics);
+        // Lazy initialize font system when first needed
+        if self.font_system.is_none() {
+            info!("Initializing font system for menu rendering...");
+            
+            // Create a minimal font database with only the fonts we need
+            let mut db = fontdb::Database::new();
+            
+            // Load text font (try multiple paths for different distros)
+            let text_font_paths = [
+                "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+                "/usr/share/fonts/TTF/NotoSans-Regular.ttf",
+                "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+                "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
+                "/usr/share/fonts/TTF/DejaVuSans.ttf",
+                "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            ];
+            
+            let mut text_loaded = false;
+            for path in &text_font_paths {
+                if std::path::Path::new(path).exists() {
+                    if db.load_font_file(path).is_ok() {
+                        info!("Loaded text font: {}", path);
+                        text_loaded = true;
+                        break;
+                    }
+                }
+            }
+            
+            // Load emoji font for menu icons
+            let emoji_font_paths = [
+                "/usr/share/fonts/noto/NotoColorEmoji.ttf",
+                "/usr/share/fonts/google-noto/NotoColorEmoji.ttf",
+                "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+                "/usr/share/fonts/TTF/NotoColorEmoji.ttf",
+                "/usr/share/fonts/noto-emoji/NotoColorEmoji.ttf",
+            ];
+            
+            for path in &emoji_font_paths {
+                if std::path::Path::new(path).exists() {
+                    if db.load_font_file(path).is_ok() {
+                        info!("Loaded emoji font: {}", path);
+                        break;
+                    }
+                }
+            }
+            
+            // Fallback: load system fonts only if no text font found
+            if !text_loaded {
+                warn!("No preferred font found, loading system fonts...");
+                db.load_system_fonts();
+            }
+            
+            let font_system = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
+            self.font_system = Some(font_system);
+            self.swash_cache = Some(SwashCache::new());
+        }
+
+        let font_system = self.font_system.as_mut().unwrap();
+        let swash_cache = self.swash_cache.as_mut().unwrap();
+
+        let mut buffer = Buffer::new(font_system, self.menu_text_metrics);
         buffer.set_size(
-            &mut self.font_system,
+            font_system,
             Some(MENU_WIDTH as f32 - 24.0),
             Some(MENU_ITEM_HEIGHT as f32),
         );
         buffer.set_text(
-            &mut self.font_system,
+            font_system,
             text,
             self.menu_text_attrs.as_attrs(),
             Shaping::Advanced,
         );
-        buffer.shape_until_scroll(&mut self.font_system, false);
+        buffer.shape_until_scroll(font_system, false);
 
         let rgba = TextColor::rgba(color[2], color[1], color[0], color[3]);
         let origin_x = x as i32;
         let origin_y = y as i32;
 
         buffer.draw(
-            &mut self.font_system,
-            &mut self.swash_cache,
+            font_system,
+            swash_cache,
             rgba,
             |px, py, _w, _h, glyph_color| {
                 let pixel_x = origin_x + px;
@@ -1675,6 +1754,7 @@ impl PointerHandler for WaylandApp {
                             } else {
                                 // Close menu if clicking outside
                                 self.menu_state = MenuState::Hidden;
+                                self.release_font_resources();
                                 self.needs_redraw = true;
                                 self.draw(qh);
                             }

@@ -428,35 +428,62 @@ impl WgpuRenderer {
                         "Using mipmap level {} ({}x{})",
                         mip_level, mipmap.width, mipmap.height
                     );
-                    (mipmap.width, mipmap.height, &mipmap.data)
+                    (mipmap.width, mipmap.height, &mipmap.data[..])
                 } else {
-                    (image.width, image.height, &image.rgba_data)
+                    (image.width, image.height, &image.rgba_data[..])
                 }
             } else {
-                (image.width, image.height, &image.rgba_data)
+                (image.width, image.height, &image.rgba_data[..])
             };
 
-        // Convert BGRA to RGBA for wgpu
-        let mut rgba_data = source_data.clone();
-        for pixel in rgba_data.chunks_exact_mut(4) {
-            pixel.swap(0, 2); // Swap B and R back to RGBA
-        }
+        // Convert BGRA to RGBA for wgpu using a streaming approach
+        // to avoid allocating a full copy of the image
+        // Process in chunks to reduce peak memory usage
+        const CHUNK_ROWS: u32 = 256;
+        let row_bytes = (source_width * 4) as usize;
+        let mut row_buffer = vec![0u8; row_bytes * CHUNK_ROWS as usize];
 
-        self.queue.write_texture(
-            wgpu::ImageCopyTexture {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &rgba_data,
-            wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * source_width),
-                rows_per_image: Some(source_height),
-            },
-            texture_size,
-        );
+        let mut y_offset = 0u32;
+        while y_offset < source_height {
+            let rows_to_process = CHUNK_ROWS.min(source_height - y_offset);
+            let chunk_bytes = row_bytes * rows_to_process as usize;
+            let src_start = (y_offset as usize) * row_bytes;
+            let src_end = src_start + chunk_bytes;
+
+            if src_end <= source_data.len() {
+                // Copy chunk and swap BGR to RGB
+                row_buffer[..chunk_bytes].copy_from_slice(&source_data[src_start..src_end]);
+                for pixel in row_buffer[..chunk_bytes].chunks_exact_mut(4) {
+                    pixel.swap(0, 2); // Swap B and R
+                }
+
+                self.queue.write_texture(
+                    wgpu::ImageCopyTexture {
+                        texture: &texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: 0,
+                            y: y_offset,
+                            z: 0,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &row_buffer[..chunk_bytes],
+                    wgpu::ImageDataLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4 * source_width),
+                        rows_per_image: Some(rows_to_process),
+                    },
+                    wgpu::Extent3d {
+                        width: tex_width,
+                        height: rows_to_process,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+
+            y_offset += rows_to_process;
+        }
 
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let texture_bind_group_layout = &self.render_pipeline.get_bind_group_layout(0);
