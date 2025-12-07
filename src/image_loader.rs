@@ -83,8 +83,14 @@ fn generate_mipmaps(width: u32, height: u32, data: &[u8]) -> Vec<MipmapLevel> {
     let mut current_height = height;
     let mut current_data = data.to_vec();
 
-    // Generate up to 8 levels or until size is too small
-    while current_width > 64 && current_height > 64 && mipmaps.len() < 8 {
+    const MIN_DIMENSION: u32 = 512;
+    const MAX_LEVELS: usize = 4;
+
+    // Generate limited levels or until size is too small
+    while current_width > MIN_DIMENSION
+        && current_height > MIN_DIMENSION
+        && mipmaps.len() < MAX_LEVELS
+    {
         let next_width = current_width / 2;
         let next_height = current_height / 2;
         

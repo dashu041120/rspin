@@ -22,6 +22,10 @@ pub struct WgpuRenderer {
     render_pipeline: wgpu::RenderPipeline,
     texture: Option<wgpu::Texture>,
     texture_bind_group: Option<wgpu::BindGroup>,
+    overlay_texture: Option<wgpu::Texture>,
+    overlay_texture_bind_group: Option<wgpu::BindGroup>,
+    overlay_viewport: Option<[f32; 4]>,
+    sampler: wgpu::Sampler,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     uniform_buffer: wgpu::Buffer,
@@ -326,6 +330,16 @@ impl WgpuRenderer {
             usage: wgpu::BufferUsages::INDEX,
         });
 
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
         Ok(Self {
             surface,
             device,
@@ -334,6 +348,10 @@ impl WgpuRenderer {
             render_pipeline,
             texture: None,
             texture_bind_group: None,
+             overlay_texture: None,
+             overlay_texture_bind_group: None,
+             overlay_viewport: None,
+             sampler,
             vertex_buffer,
             index_buffer,
             uniform_buffer,
@@ -441,16 +459,6 @@ impl WgpuRenderer {
         );
 
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-
         let texture_bind_group_layout = &self.render_pipeline.get_bind_group_layout(0);
 
         let texture_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -462,7 +470,7 @@ impl WgpuRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
             ],
             label: Some("texture_bind_group"),
@@ -546,13 +554,110 @@ impl WgpuRenderer {
             render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            render_pass.set_viewport(
+                0.0,
+                0.0,
+                self.width as f32,
+                self.height as f32,
+                0.0,
+                1.0,
+            );
             render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..1);
+
+            if let (Some(overlay_bind_group), Some(viewport)) =
+                (self.overlay_texture_bind_group.as_ref(), self.overlay_viewport)
+            {
+                render_pass.set_viewport(
+                    viewport[0],
+                    viewport[1],
+                    viewport[2],
+                    viewport[3],
+                    0.0,
+                    1.0,
+                );
+                render_pass.set_bind_group(0, overlay_bind_group, &[]);
+                render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..1);
+            }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
         Ok(true)
+    }
+
+    pub fn update_overlay_texture(
+        &mut self,
+        width: u32,
+        height: u32,
+        viewport: [f32; 4],
+        rgba_data: &[u8],
+    ) -> Result<()> {
+        if width == 0 || height == 0 {
+            self.clear_overlay_texture();
+            return Ok(());
+        }
+
+        let texture_size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            size: texture_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            label: Some("overlay_texture"),
+            view_formats: &[],
+        });
+
+        self.queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba_data,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * width),
+                rows_per_image: Some(height),
+            },
+            texture_size,
+        );
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let layout = &self.render_pipeline.get_bind_group_layout(0);
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+            label: Some("overlay_texture_bind_group"),
+        });
+
+        self.overlay_texture = Some(texture);
+        self.overlay_texture_bind_group = Some(bind_group);
+        self.overlay_viewport = Some(viewport);
+        Ok(())
+    }
+
+    pub fn clear_overlay_texture(&mut self) {
+        self.overlay_texture = None;
+        self.overlay_texture_bind_group = None;
+        self.overlay_viewport = None;
     }
 
     pub fn width(&self) -> u32 {

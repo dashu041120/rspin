@@ -446,6 +446,11 @@ impl WaylandApp {
     fn update_size(&mut self) {
         // Frame rate limiting during resize (target ~30fps = 33ms between frames)
         const MIN_FRAME_INTERVAL_MS: u128 = 25;
+
+        let max_width = self.display_width.max(MIN_SIZE).min(MAX_SIZE);
+        let max_height = self.display_height.max(MIN_SIZE).min(MAX_SIZE);
+        self.width = self.width.clamp(MIN_SIZE, max_width);
+        self.height = self.height.clamp(MIN_SIZE, max_height);
         
         if self.resizing {
             if let Some(last_draw) = self.last_resize_draw {
@@ -536,9 +541,28 @@ impl WaylandApp {
             return;
         }
 
+        // Clamp size to display bounds to avoid oversized buffers
+        let max_width = self.display_width.max(MIN_SIZE).min(MAX_SIZE);
+        let max_height = self.display_height.max(MIN_SIZE).min(MAX_SIZE);
+        self.width = self.width.clamp(MIN_SIZE, max_width);
+        self.height = self.height.clamp(MIN_SIZE, max_height);
+
+        let menu_pos = self.menu_pos;
+        let menu_hover = self.menu_hover_item;
+        let menu_items = if self.menu_state == MenuState::Visible {
+            Some(self.get_menu_items())
+        } else {
+            None
+        };
+
         // Try GPU rendering first if enabled
-        // But fall back to CPU when menu is visible (GPU doesn't render menu yet)
-        if self.use_gpu && self.gpu_renderer.is_some() && self.menu_state != MenuState::Visible {
+        if self.use_gpu && self.gpu_renderer.is_some() {
+            if let Some(ref items) = menu_items {
+                self.update_gpu_menu_overlay(menu_pos, menu_hover, items);
+            } else if let Some(renderer) = self.gpu_renderer.as_mut() {
+                renderer.clear_overlay_texture();
+            }
+
             if self.draw_gpu() {
                 return;
             }
@@ -546,7 +570,7 @@ impl WaylandApp {
             warn!("GPU rendering failed, falling back to CPU");
         }
 
-        // CPU rendering path (also used when menu is visible)
+        // CPU rendering path
         self.draw_cpu();
     }
 
@@ -584,6 +608,52 @@ impl WaylandApp {
         }
     }
 
+    fn update_gpu_menu_overlay(
+        &mut self,
+        menu_pos: (i32, i32),
+        menu_hover_item: Option<usize>,
+        menu_items: &[&str],
+    ) {
+        let surface_width = self.width;
+        let surface_height = self.height;
+        if surface_width == 0 || surface_height == 0 {
+            return;
+        }
+
+        let menu_x = menu_pos.0.max(0).min(surface_width as i32 - 1).max(0);
+        let menu_y = menu_pos.1.max(0).min(surface_height as i32 - 1).max(0);
+
+        let menu_width = MENU_WIDTH.min(surface_width.saturating_sub(menu_x as u32));
+        let menu_height =
+            (menu_items.len() as u32 * MENU_ITEM_HEIGHT).min(surface_height.saturating_sub(menu_y as u32));
+
+        if menu_width == 0 || menu_height == 0 {
+            if let Some(renderer) = self.gpu_renderer.as_mut() {
+                renderer.clear_overlay_texture();
+            }
+            return;
+        }
+
+        let mut buffer = vec![0u8; (menu_width * menu_height * 4) as usize];
+        self.render_menu_overlay_contents(&mut buffer, menu_width, menu_height, menu_hover_item, menu_items);
+        for pixel in buffer.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+
+        let viewport = [
+            menu_x as f32,
+            menu_y as f32,
+            menu_width as f32,
+            menu_height as f32,
+        ];
+
+        if let Some(renderer) = self.gpu_renderer.as_mut() {
+            if let Err(e) = renderer.update_overlay_texture(menu_width, menu_height, viewport, &buffer) {
+                warn!("Failed to upload menu overlay: {:?}", e);
+            }
+        }
+    }
+
     /// Draw using CPU (shared memory buffer)
     fn draw_cpu(&mut self) {
         // Clamp window size to prevent buffer allocation failures
@@ -613,12 +683,8 @@ impl WaylandApp {
         let menu_visible = self.menu_state == MenuState::Visible;
         let menu_pos = self.menu_pos;
         let menu_hover = self.menu_hover_item;
-        let scale_mode = self.scale_mode;
         let menu_items: Vec<&'static str> = if menu_visible {
-            match scale_mode {
-                ScaleMode::KeepAspectRatio => vec!["Close", "Copy to Clipboard", "Opacity +", "Opacity -", "Scale: Free"],
-                ScaleMode::FreeScale => vec!["Close", "Copy to Clipboard", "Opacity +", "Opacity -", "Scale: Keep Ratio"],
-            }
+            self.get_menu_items()
         } else {
             vec![]
         };
@@ -665,11 +731,13 @@ impl WaylandApp {
                 }
             };
 
+        let cache_enabled = !self.use_gpu;
+
         // Choose rendering method based on whether we're resizing
         if is_resizing {
             // Use fast nearest-neighbor during resize for responsiveness
             Self::render_image_fast(&self.image, canvas, width, height, opacity);
-        } else {
+        } else if cache_enabled {
             // Use high-quality bilinear interpolation when not resizing
             // Check if we can use cached image
             if self.cached_scaled_size == (width, height) {
@@ -687,6 +755,10 @@ impl WaylandApp {
                 self.cached_scaled_image = Some(cached);
                 self.cached_scaled_size = (width, height);
             }
+        } else {
+            Self::render_image_static(&self.image, canvas, width, height, opacity);
+            self.cached_scaled_image = None;
+            self.cached_scaled_size = (0, 0);
         }
 
         // Draw context menu if visible
@@ -948,6 +1020,78 @@ impl WaylandApp {
         // Left and right borders
         for y in menu_y..(menu_y + menu_height).min(canvas_height) {
             for &x in &[menu_x, (menu_x + MENU_WIDTH - 1).min(canvas_width - 1)] {
+                let idx = ((y * canvas_width + x) * 4) as usize;
+                if idx + 3 < canvas.len() {
+                    canvas[idx] = border_color[0];
+                    canvas[idx + 1] = border_color[1];
+                    canvas[idx + 2] = border_color[2];
+                    canvas[idx + 3] = border_color[3];
+                }
+            }
+        }
+    }
+
+    /// Render menu contents into a local buffer (used for GPU overlay)
+    fn render_menu_overlay_contents(
+        &mut self,
+        canvas: &mut [u8],
+        canvas_width: u32,
+        canvas_height: u32,
+        menu_hover_item: Option<usize>,
+        menu_items: &[&str],
+    ) {
+        for (i, item) in menu_items.iter().enumerate() {
+            let item_y = (i as u32) * MENU_ITEM_HEIGHT;
+            if item_y >= canvas_height {
+                break;
+            }
+            let is_hovered = menu_hover_item == Some(i);
+
+            let bg_color: [u8; 4] = if is_hovered {
+                [100, 150, 220, 240]
+            } else {
+                [45, 45, 48, 240]
+            };
+
+            for y in item_y..(item_y + MENU_ITEM_HEIGHT).min(canvas_height) {
+                for x in 0..canvas_width.min(MENU_WIDTH) {
+                    let idx = ((y * canvas_width + x) * 4) as usize;
+                    if idx + 3 < canvas.len() {
+                        canvas[idx] = bg_color[0];
+                        canvas[idx + 1] = bg_color[1];
+                        canvas[idx + 2] = bg_color[2];
+                        canvas[idx + 3] = bg_color[3];
+                    }
+                }
+            }
+
+            let text_x = 12;
+            let text_y = item_y + 5;
+            let text_color = if is_hovered {
+                [255, 255, 255, 255]
+            } else {
+                [220, 220, 220, 255]
+            };
+            self.draw_text_cosmic(canvas, canvas_width, canvas_height, text_x, text_y, item, text_color);
+        }
+
+        let border_color: [u8; 4] = [80, 80, 80, 255];
+        let menu_height = canvas_height.min(menu_items.len() as u32 * MENU_ITEM_HEIGHT);
+
+        for x in 0..canvas_width.min(MENU_WIDTH) {
+            for &y in &[0, menu_height.saturating_sub(1)] {
+                let idx = ((y * canvas_width + x) * 4) as usize;
+                if idx + 3 < canvas.len() {
+                    canvas[idx] = border_color[0];
+                    canvas[idx + 1] = border_color[1];
+                    canvas[idx + 2] = border_color[2];
+                    canvas[idx + 3] = border_color[3];
+                }
+            }
+        }
+
+        for y in 0..menu_height {
+            for &x in &[0, canvas_width.min(MENU_WIDTH).saturating_sub(1)] {
                 let idx = ((y * canvas_width + x) * 4) as usize;
                 if idx + 3 < canvas.len() {
                     canvas[idx] = border_color[0];
@@ -1704,13 +1848,13 @@ pub fn run(image: ImageData, opacity: f32, use_gpu: bool) -> Result<()> {
     app.display_height = display_height;
     info!("Display dimensions: {}x{}", display_width, display_height);
 
-    // Calculate the target size (limit to 20% of screen area)
+    // Calculate the target size (limit to 10% of screen area)
     let (target_width, target_height) = calculate_limited_size(
         app.image.width,
         app.image.height,
         display_width,
         display_height,
-        0.20,
+        0.10,
     );
     info!(
         "Image size: {}x{} -> Display size: {}x{}",
