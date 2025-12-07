@@ -54,6 +54,61 @@ cd rspin-0.1.0-x86_64-linux
 ./install.sh  # Installs to ~/.local/bin
 ```
 
+**NixOS / Nix (Flakes):**
+```bash
+# Run directly without installing
+nix run github:dashu041120/rspin -- image.png
+
+# Install to your profile
+nix profile install github:dashu041120/rspin
+
+# Or add to your NixOS configuration or home-manager
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    rspin.url = "github:dashu041120/rspin";
+  };
+
+  outputs = { self, nixpkgs, rspin, ... }: {
+    # For NixOS system configuration
+    nixosConfigurations.yourhost = nixpkgs.lib.nixosSystem {
+      # ...
+      environment.systemPackages = [ rspin.packages.x86_64-linux.default ];
+    };
+
+    # Or for home-manager
+    homeConfigurations.youruser = home-manager.lib.homeManagerConfiguration {
+      # ...
+      home.packages = [ rspin.packages.x86_64-linux.default ];
+    };
+  };
+}
+```
+
+**Nix (without Flakes):**
+```bash
+# Clone the repository
+git clone https://github.com/dashu041120/rspin.git
+cd rspin
+
+# Build and install
+nix-env -if .
+
+# Or just build
+nix-build
+
+# Run from result
+./result/bin/rspin image.png
+```
+
+> **Note for Nix users:** After downloading a release, you need to update the `sha256` hash in `flake.nix`. 
+> You can get the correct hash by running:
+> ```bash
+> nix flake update
+> nix build  # This will fail with the correct hash in the error message
+> ```
+> Then update the `sha256` value in `flake.nix` and rebuild.
+
 ### Build from Source
 
 ```bash
