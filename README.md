@@ -22,9 +22,73 @@ A desktop sticky image viewer for Wayland compositors.
 
 ## Installation
 
+### Pre-built Packages
+
+**Debian/Ubuntu (DEB):**
+```bash
+# Download from releases page
+wget https://github.com/dashu041120/rspin/releases/download/v0.1.0/rspin_0.1.0_amd64.deb
+sudo dpkg -i rspin_0.1.0_amd64.deb
+```
+
+**Fedora/RHEL (RPM):**
+```bash
+# Download from releases page
+wget https://github.com/dashu041120/rspin/releases/download/v0.1.0/rspin-0.1.0-1.x86_64.rpm
+sudo dnf install rspin-0.1.0-1.x86_64.rpm
+```
+
+**Arch Linux:**
+```bash
+# Download from releases page
+wget https://github.com/dashu041120/rspin/releases/download/v0.1.0/rspin-0.1.0-1-x86_64.pkg.tar.zst
+sudo pacman -U rspin-0.1.0-1-x86_64.pkg.tar.zst
+```
+
+**Portable (any Linux):**
+```bash
+# Download tarball from releases page
+wget https://github.com/dashu041120/rspin/releases/download/v0.1.0/rspin-0.1.0-x86_64-linux.tar.gz
+tar xzf rspin-0.1.0-x86_64-linux.tar.gz
+cd rspin-0.1.0-x86_64-linux
+./install.sh  # Installs to ~/.local/bin
+```
+
+### Build from Source
+
 ```bash
 cargo build --release
 # The binary will be at target/release/rspin
+```
+
+### Building Packages
+
+**DEB package:**
+```bash
+cargo install cargo-deb
+cargo deb
+# Output: target/debian/rspin_*.deb
+```
+
+**RPM package:**
+```bash
+cargo install cargo-generate-rpm
+cargo build --release
+cargo generate-rpm
+# Output: target/generate-rpm/rspin-*.rpm
+```
+
+**Arch package:**
+```bash
+cd packaging/arch
+makepkg -sf
+# Output: rspin-*.pkg.tar.zst
+```
+
+**Portable tarball:**
+```bash
+./scripts/build-tarball.sh
+# Output: dist/rspin-*-x86_64-linux.tar.gz
 ```
 
 ## Usage
