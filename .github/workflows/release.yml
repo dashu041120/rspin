@@ -91,18 +91,11 @@ jobs:
             git \
             sudo
 
-      - name: Create source tarball
-        run: |
-          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          mkdir -p rspin-${VERSION}
-          cp -r Cargo.* src/ LICENSE README.md rspin-${VERSION}/
-          tar czf packaging/arch/rspin-${VERSION}.tar.gz rspin-${VERSION}
-
       - name: Create build user
         run: |
           useradd -m builduser
           echo "builduser ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
-          chown -R builduser:builduser .
+          chown -R builduser:builduser packaging/arch
 
       - name: Build PKGBUILD
         run: |
