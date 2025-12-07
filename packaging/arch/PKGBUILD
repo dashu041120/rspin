@@ -1,0 +1,40 @@
+# Maintainer: dashu041120
+pkgname=rspin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="A desktop sticky image viewer for Wayland"
+arch=('x86_64')
+url="https://github.com/dashu041120/rspin"
+license=('MIT')
+depends=('wayland' 'libxkbcommon')
+optdepends=('wl-clipboard: for clipboard support'
+            'xclip: alternative clipboard support')
+makedepends=('cargo' 'rust')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/dashu041120/$pkgname/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+    cd "$srcdir/$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$CARCH-unknown-linux-gnu"
+}
+
+build() {
+    cd "$srcdir/$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo build --frozen --release --all-features
+}
+
+check() {
+    cd "$srcdir/$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo test --frozen --all-features
+}
+
+package() {
+    cd "$srcdir/$pkgname-$pkgver"
+    install -Dm755 target/release/rspin "$pkgdir/usr/bin/rspin"
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

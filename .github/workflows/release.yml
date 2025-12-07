@@ -1,0 +1,161 @@
+name: Release Packages
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-deb:
+    name: Build DEB Package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwayland-dev \
+            libxkbcommon-dev \
+            cargo-deb
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Build DEB package
+        run: cargo deb
+
+      - name: Upload DEB package
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-package
+          path: target/debian/*.deb
+
+  build-rpm:
+    name: Build RPM Package
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          dnf install -y \
+            rust cargo \
+            wayland-devel \
+            libxkbcommon-devel \
+            rpm-build \
+            cargo-generate-rpm
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Generate RPM
+        run: cargo generate-rpm
+
+      - name: Upload RPM package
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-package
+          path: target/generate-rpm/*.rpm
+
+  build-arch:
+    name: Build Arch Package
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm \
+            base-devel \
+            rust \
+            cargo \
+            wayland \
+            libxkbcommon \
+            git
+
+      - name: Build PKGBUILD
+        run: |
+          cd packaging/arch
+          makepkg -sf --noconfirm
+
+      - name: Upload Arch package
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-package
+          path: packaging/arch/*.pkg.tar.zst
+
+  build-tarball:
+    name: Build Portable Tarball
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwayland-dev \
+            libxkbcommon-dev
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Create tarball
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          TARBALL_NAME="rspin-${VERSION}-x86_64-linux"
+          mkdir -p "dist/$TARBALL_NAME"
+          cp target/release/rspin "dist/$TARBALL_NAME/"
+          cp README.md LICENSE "dist/$TARBALL_NAME/"
+          cp scripts/install.sh scripts/uninstall.sh "dist/$TARBALL_NAME/"
+          cd dist
+          tar czf "${TARBALL_NAME}.tar.gz" "$TARBALL_NAME"
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-tarball
+          path: dist/*.tar.gz
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-deb, build-rpm, build-arch, build-tarball]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/debian-package/*.deb
+            artifacts/rpm-package/*.rpm
+            artifacts/arch-package/*.pkg.tar.zst
+            artifacts/portable-tarball/*.tar.gz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -19,13 +19,13 @@ CLI (clap) ──> image_loader (image crate)
 
 ## External Libraries
 
-| Purpose | Crate |
-|---------|-------|
+| Purpose                   | Crate                                                                 |
+| ------------------------- | --------------------------------------------------------------------- |
 | Wayland protocol bindings | `smithay-client-toolkit`, `wayland-client`, `wayland-protocols` |
-| GPU backend | `wgpu`, `raw-window-handle`, `pollster`, `bytemuck` |
-| Image decoding | `image` |
-| CLI and logging | `clap`, `anyhow`, `thiserror`, `log`, `env_logger` |
-| Misc | `atty` (stdin detection), `memmap2` (slot pool utilities) |
+| GPU backend               | `wgpu`, `raw-window-handle`, `pollster`, `bytemuck`           |
+| Image decoding            | `image`                                                             |
+| CLI and logging           | `clap`, `anyhow`, `thiserror`, `log`, `env_logger`          |
+| Misc                      | `atty` (stdin detection), `memmap2` (slot pool utilities)         |
 
 The exact versions are listed in `Cargo.toml`.
 
@@ -62,6 +62,11 @@ cargo build --release
 ```
 
 When working with Wayland protocol changes, ensure the compositor you test on exposes `wlr-layer-shell`. `rspin` does not depend on `winit`; everything happens on the raw Wayland connection, so debugging Wayland events can be done by enabling `RUST_LOG=wayland_client=debug`.
+
+```bash
+RUST_LOG=debug ./target/release/rspin x.jpg 2>&1 | head -50
+```
+
 
 ## File Map
 
