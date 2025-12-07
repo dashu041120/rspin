@@ -2,6 +2,25 @@
 
 A desktop sticky image viewer for Wayland compositors.
 
+<img style="max-width: 36%; height: auto;" alt="image" src="https://github.com/user-attachments/assets/32d18b7f-3aec-48d3-aeaa-51c87945282a" />
+
+
+## Table of Contents
+
+- [Features](#features)
+- [Requirements](#requirements)
+- [Usage](#usage)
+- [Configuration for niri](#configuration-for-niri)
+- [Controls](#controls)
+- [Installation](#installation)
+- [Context Menu Options](#context-menu-options)
+- [Scaling Modes](#scaling-modes)
+- [Wayland overlay mode](#wayland-overlay-mode)
+- [Rendering details](#rendering-details)
+- [Supported Image Formats](#supported-image-formats)
+- [Development](#development)
+- [License](#license)
+
 ## Features
 
 - Always-on-top Wayland overlay window implemented with `wlr-layer-shell`
@@ -19,132 +38,6 @@ A desktop sticky image viewer for Wayland compositors.
 - Wayland compositor with wlr-layer-shell support (niri, sway, hyprland, etc.)
 - Rust 1.70+
 - Optional: `wl-copy` or `xclip` for clipboard support
-
-## Installation
-
-### Pre-built Packages
-
-**Debian/Ubuntu (DEB):**
-```bash
-# Download from releases page
-wget https://github.com/dashu041120/rspin/releases/download/v0.1.0/rspin_0.1.0_amd64.deb
-sudo dpkg -i rspin_0.1.0_amd64.deb
-```
-
-**Fedora/RHEL (RPM):**
-```bash
-# Download from releases page
-wget https://github.com/dashu041120/rspin/releases/download/v0.1.0/rspin-0.1.0-1.x86_64.rpm
-sudo dnf install rspin-0.1.0-1.x86_64.rpm
-```
-
-**Arch Linux:**
-```bash
-# Download from releases page
-wget https://github.com/dashu041120/rspin/releases/download/v0.1.0/rspin-0.1.0-1-x86_64.pkg.tar.zst
-sudo pacman -U rspin-0.1.0-1-x86_64.pkg.tar.zst
-```
-
-**Portable (any Linux):**
-```bash
-# Download tarball from releases page
-wget https://github.com/dashu041120/rspin/releases/download/v0.1.0/rspin-0.1.0-x86_64-linux.tar.gz
-tar xzf rspin-0.1.0-x86_64-linux.tar.gz
-cd rspin-0.1.0-x86_64-linux
-./install.sh  # Installs to ~/.local/bin
-```
-
-**NixOS / Nix (Flakes):**
-```bash
-# Run directly without installing
-nix run github:dashu041120/rspin -- image.png
-
-# Install to your profile
-nix profile install github:dashu041120/rspin
-
-# Or add to your NixOS configuration or home-manager
-{
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    rspin.url = "github:dashu041120/rspin";
-  };
-
-  outputs = { self, nixpkgs, rspin, ... }: {
-    # For NixOS system configuration
-    nixosConfigurations.yourhost = nixpkgs.lib.nixosSystem {
-      # ...
-      environment.systemPackages = [ rspin.packages.x86_64-linux.default ];
-    };
-
-    # Or for home-manager
-    homeConfigurations.youruser = home-manager.lib.homeManagerConfiguration {
-      # ...
-      home.packages = [ rspin.packages.x86_64-linux.default ];
-    };
-  };
-}
-```
-
-**Nix (without Flakes):**
-```bash
-# Clone the repository
-git clone https://github.com/dashu041120/rspin.git
-cd rspin
-
-# Build and install
-nix-env -if .
-
-# Or just build
-nix-build
-
-# Run from result
-./result/bin/rspin image.png
-```
-
-> **Note for Nix users:** After downloading a release, you need to update the `sha256` hash in `flake.nix`. 
-> You can get the correct hash by running:
-> ```bash
-> nix flake update
-> nix build  # This will fail with the correct hash in the error message
-> ```
-> Then update the `sha256` value in `flake.nix` and rebuild.
-
-### Build from Source
-
-```bash
-cargo build --release
-# The binary will be at target/release/rspin
-```
-
-### Building Packages
-
-**DEB package:**
-```bash
-cargo install cargo-deb
-cargo deb
-# Output: target/debian/rspin_*.deb
-```
-
-**RPM package:**
-```bash
-cargo install cargo-generate-rpm
-cargo build --release
-cargo generate-rpm
-# Output: target/generate-rpm/rspin-*.rpm
-```
-
-**Arch package:**
-```bash
-cd packaging/arch
-makepkg -sf
-# Output: rspin-*.pkg.tar.zst
-```
-
-**Portable tarball:**
-```bash
-./scripts/build-tarball.sh
-# Output: dist/rspin-*-x86_64-linux.tar.gz
-```
 
 ## Usage
 
@@ -165,7 +58,7 @@ grim -g "$(slurp)" - | rspin --opacity 0.9
 
 ### Command line reference
 
-```
+```bash
 Usage: rspin [OPTIONS] [IMAGE]
 
 Arguments:
@@ -201,6 +94,7 @@ rspin --app-id my-viewer image.png
 ```
 
 Then configure it separately:
+
 ```kdl
 window-rule {
     match app-id="^my-viewer$"
@@ -212,14 +106,158 @@ window-rule {
 
 ## Controls
 
-| Action | Control |
-|--------|---------|
-| Move window | Drag with left mouse button |
-| Resize window | Drag edges or corners |
-| Adjust opacity | Scroll wheel |
-| Close | Double-click, Escape, Q, or right-click menu |
-| Context menu | Right-click |
-| Copy to clipboard | Via right-click menu |
+| Action            | Control                                      |
+| ----------------- | -------------------------------------------- |
+| Move window       | Drag with left mouse button                  |
+| Resize window     | Drag edges or corners                        |
+| Adjust opacity    | Scroll wheel                                 |
+| Close             | Double-click, Escape, Q, or right-click menu |
+| Context menu      | Right-click                                  |
+| Copy to clipboard | Via right-click menu                         |
+
+## Installation
+
+### Pre-built Packages
+
+**Debian/Ubuntu (DEB):**
+
+```bash
+# Download from releases page
+wget https://github.com/dashu041120/rspin/releases/download/v0.1.0/rspin_0.1.0_amd64.deb
+sudo dpkg -i rspin_0.1.0_amd64.deb
+```
+
+**Fedora/RHEL (RPM):**
+
+```bash
+# Download from releases page
+wget https://github.com/dashu041120/rspin/releases/download/v0.1.0/rspin-0.1.0-1.x86_64.rpm
+sudo dnf install rspin-0.1.0-1.x86_64.rpm
+```
+
+**Arch Linux:**
+
+```bash
+# Download from releases page
+wget https://github.com/dashu041120/rspin/releases/download/v0.1.0/rspin-0.1.0-1-x86_64.pkg.tar.zst
+sudo pacman -U rspin-0.1.0-1-x86_64.pkg.tar.zst
+```
+
+**Portable (any Linux):**
+
+```bash
+# Download tarball from releases page
+wget https://github.com/dashu041120/rspin/releases/download/v0.1.0/rspin-0.1.0-x86_64-linux.tar.gz
+tar xzf rspin-0.1.0-x86_64-linux.tar.gz
+cd rspin-0.1.0-x86_64-linux
+./install.sh  # Installs to ~/.local/bin
+```
+
+**NixOS / Nix (Flakes):**
+
+```bash
+# Run directly without installing
+nix run github:dashu041120/rspin -- image.png
+
+# Run via nix-shell
+nix shell github:dashu041120/rspin
+# you can also clone and run nix shell
+rspin /path/to/image.png
+
+# Install to your profile
+nix profile install github:dashu041120/rspin
+
+# Or add to your NixOS configuration or home-manager
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    rspin.url = "github:dashu041120/rspin";
+  };
+
+  outputs = { self, nixpkgs, rspin, ... }: {
+    # For NixOS system configuration
+    nixosConfigurations.yourhost = nixpkgs.lib.nixosSystem {
+      # ...
+      environment.systemPackages = [ rspin.packages.x86_64-linux.default ];
+    };
+
+    # Or for home-manager
+    homeConfigurations.youruser = home-manager.lib.homeManagerConfiguration {
+      # ...
+      home.packages = [ rspin.packages.x86_64-linux.default ];
+    };
+  };
+}
+```
+
+**Nix (without Flakes):**
+
+```bash
+# Clone the repository
+git clone https://github.com/dashu041120/rspin.git
+cd rspin
+
+# Build and install
+nix-env -if .
+
+# Or just build
+nix-build
+
+# Run from result
+./result/bin/rspin image.png
+```
+
+> **Note for Nix users:** After downloading a release, you need to update the `sha256` hash in `flake.nix`.
+> You can get the correct hash by running:
+>
+> ```bash
+> nix flake update
+> nix build  # This will fail with the correct hash in the error message
+> ```
+>
+> Then update the `sha256` value in `flake.nix` and rebuild.
+
+### Build from Source
+
+```bash
+cargo build --release
+# The binary will be at target/release/rspin
+```
+
+### Building Packages
+
+**DEB package:**
+
+```bash
+cargo install cargo-deb
+cargo deb
+# Output: target/debian/rspin_*.deb
+```
+
+**RPM package:**
+
+```bash
+cargo install cargo-generate-rpm
+cargo build --release
+cargo generate-rpm
+# Output: target/generate-rpm/rspin-*.rpm
+```
+
+**Arch package:**
+
+```bash
+cd packaging/arch
+makepkg -sf
+# Output: rspin-*.pkg.tar.zst
+```
+
+**Portable tarball:**
+
+```bash
+./scripts/build-tarball.sh
+# Output: dist/rspin-*-x86_64-linux.tar.gz
+```
+
 
 ## Context Menu Options
 

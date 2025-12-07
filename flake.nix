@@ -19,7 +19,7 @@
 
           src = pkgs.fetchurl {
             url = "https://github.com/dashu041120/rspin/releases/download/v${version}/rspin-${version}-x86_64-linux.tar.gz";
-            sha256 = ""; # Users need to update this with the actual hash
+            sha256 = "1as5xjq9z4gdvpp2zh235626f5ndlsha245jl51rb1wk8b0pc64z";
           };
 
           nativeBuildInputs = [ pkgs.makeWrapper ];
@@ -65,6 +65,40 @@
         apps.default = {
           type = "app";
           program = "${self.packages.${system}.default}/bin/rspin";
+        };
+
+        # Development shell for building from source
+        devShells.default = pkgs.mkShell {
+          buildInputs = with pkgs; [
+            # Rust toolchain
+            rustc
+            cargo
+            rustfmt
+            clippy
+
+            # Build dependencies
+            pkg-config
+
+            # Runtime dependencies
+            wayland
+            libxkbcommon
+            vulkan-loader
+            libGL
+
+            # Optional tools
+            wl-clipboard
+          ];
+
+          shellHook = ''
+            echo "🦀 rspin development environment"
+            echo "Usage:"
+            echo "  cargo build          - Build the project"
+            echo "  cargo run -- <args>  - Run rspin"
+            echo "  cargo test           - Run tests"
+            echo ""
+            echo "Example:"
+            echo "  cargo run -- /path/to/image.png"
+          '';
         };
       }
     );
