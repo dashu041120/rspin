@@ -5,6 +5,7 @@ use crate::image_loader::ImageData;
 use crate::wgpu_renderer::WgpuRenderer;
 use anyhow::{Context, Result};
 use log::{debug, error, info, warn};
+use cosmic_text::{Attrs, AttrsOwned, Buffer, FontSystem, Metrics, Shaping, SwashCache, Color as TextColor, Family};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
@@ -14,7 +15,7 @@ use smithay_client_toolkit::{
     registry_handlers,
     seat::{
         keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
-        pointer::{PointerEvent, PointerEventKind, PointerHandler},
+        pointer::{CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemedPointer, ThemeSpec},
         Capability, SeatHandler, SeatState,
     },
     shell::{
@@ -25,7 +26,7 @@ use smithay_client_toolkit::{
         WaylandSurface,
     },
     shm::{
-        slot::{Buffer, SlotPool},
+        slot::{Buffer as ShmBuffer, SlotPool},
         Shm, ShmHandler,
     },
 };
@@ -128,7 +129,7 @@ struct WaylandApp {
     // Surface and buffer management
     layer_surface: Option<LayerSurface>,
     pool: Option<SlotPool>,
-    buffer: Option<Buffer>,
+    buffer: Option<ShmBuffer>,
     width: u32,
     height: u32,
     configured: bool,
@@ -139,6 +140,8 @@ struct WaylandApp {
 
     // Pointer state
     pointer_pos: (f64, f64),
+    themed_pointer: Option<ThemedPointer>,
+    set_cursor_on_next_frame: Option<CursorIcon>,
 
     // Dragging state
     dragging: bool,
@@ -178,6 +181,12 @@ struct WaylandApp {
     use_gpu: bool,
     gpu_renderer: Option<WgpuRenderer>,
     gpu_initialized: bool,
+
+    // Text rendering
+    font_system: FontSystem,
+    swash_cache: SwashCache,
+    menu_text_attrs: AttrsOwned,
+    menu_text_metrics: Metrics,
 }
 
 impl WaylandApp {
@@ -194,6 +203,9 @@ impl WaylandApp {
         opacity: f32,
         use_gpu: bool,
     ) -> Self {
+        let menu_text_metrics = Metrics::new(14.0, 18.0);
+        let menu_text_attrs = AttrsOwned::new(Attrs::new().family(Family::Name("Noto Sans")));
+
         Self {
             registry_state,
             seat_state,
@@ -217,6 +229,8 @@ impl WaylandApp {
             margin_left: 100,
             margin_top: 100,
             pointer_pos: (0.0, 0.0),
+            themed_pointer: None,
+            set_cursor_on_next_frame: None,
             dragging: false,
             drag_start_pos: (0.0, 0.0),
             drag_start_margin: (0, 0),
@@ -238,6 +252,10 @@ impl WaylandApp {
             use_gpu,
             gpu_renderer: None,
             gpu_initialized: false,
+            font_system: FontSystem::new(),
+            swash_cache: SwashCache::new(),
+            menu_text_attrs,
+            menu_text_metrics,
         }
     }
 
@@ -288,14 +306,14 @@ impl WaylandApp {
     /// Get dynamic menu items based on current state
     fn get_menu_items(&self) -> Vec<&'static str> {
         let scale_mode_text = match self.scale_mode {
-            ScaleMode::KeepAspectRatio => "Scale: Free",
-            ScaleMode::FreeScale => "Scale: Keep Ratio",
+            ScaleMode::KeepAspectRatio => "📐 Scale: Free",
+            ScaleMode::FreeScale => "📐 Scale: Keep Ratio",
         };
         vec![
-            "Close",
-            "Copy to Clipboard",
-            "Opacity +",
-            "Opacity -",
+            "❌ Close",
+            "📋 Copy to Clipboard",
+            "🔆 Opacity +",
+            "🔅 Opacity -",
             scale_mode_text,
         ]
     }
@@ -610,32 +628,42 @@ impl WaylandApp {
             match SlotPool::new(buffer_size, &self.shm) {
                 Ok(pool) => self.pool = Some(pool),
                 Err(e) => {
-                    error!("Failed to create slot pool: {}. Buffer size: {} bytes", e, buffer_size);
+                    error!(
+                        "Failed to create slot pool: {}. Buffer size: {} bytes",
+                        e, buffer_size
+                    );
                     return;
                 }
             }
         }
 
-        let pool = self.pool.as_mut().unwrap();
+        // Temporarily take ownership of the pool to avoid borrow conflicts during rendering
+        let mut pool = match self.pool.take() {
+            Some(pool) => pool,
+            None => return,
+        };
 
         // Resize pool if needed
         if pool.len() < buffer_size {
             if let Err(e) = pool.resize(buffer_size) {
                 error!("Failed to resize pool to {} bytes: {}", buffer_size, e);
-                // Reset pool and try to recreate smaller
+                // Drop pool so a new one will be created next frame
                 self.pool = None;
                 return;
             }
         }
 
         // Create buffer
-        let (buffer, canvas) = match pool.create_buffer(width as i32, height as i32, stride, wl_shm::Format::Argb8888) {
-            Ok(buf) => buf,
-            Err(e) => {
-                error!("Failed to create buffer {}x{}: {}", width, height, e);
-                return;
-            }
-        };
+        let (buffer, canvas) =
+            match pool.create_buffer(width as i32, height as i32, stride, wl_shm::Format::Argb8888)
+            {
+                Ok(buf) => buf,
+                Err(e) => {
+                    error!("Failed to create buffer {}x{}: {}", width, height, e);
+                    self.pool = Some(pool);
+                    return;
+                }
+            };
 
         // Choose rendering method based on whether we're resizing
         if is_resizing {
@@ -663,7 +691,7 @@ impl WaylandApp {
 
         // Draw context menu if visible
         if menu_visible {
-            Self::render_menu_static(canvas, width, height, menu_pos, menu_hover, &menu_items);
+            self.render_menu(canvas, width, height, menu_pos, menu_hover, &menu_items);
         }
 
         // Draw resize handles (subtle border)
@@ -676,6 +704,7 @@ impl WaylandApp {
         surface.damage_buffer(0, 0, width as i32, height as i32);
         surface.commit();
 
+        self.pool = Some(pool);
         self.buffer = Some(buffer);
         self.needs_redraw = false;
     }
@@ -861,7 +890,7 @@ impl WaylandApp {
     }
 
     /// Render the context menu (static version)
-    fn render_menu_static(canvas: &mut [u8], canvas_width: u32, canvas_height: u32, menu_pos: (i32, i32), menu_hover_item: Option<usize>, menu_items: &[&str]) {
+    fn render_menu(&mut self, canvas: &mut [u8], canvas_width: u32, canvas_height: u32, menu_pos: (i32, i32), menu_hover_item: Option<usize>, menu_items: &[&str]) {
         let menu_x = menu_pos.0.max(0) as u32;
         let menu_y = menu_pos.1.max(0) as u32;
 
@@ -869,11 +898,11 @@ impl WaylandApp {
             let item_y = menu_y + (i as u32 * MENU_ITEM_HEIGHT);
             let is_hovered = menu_hover_item == Some(i);
 
-            // Draw menu item background
+            // Draw menu item background with rounded appearance
             let bg_color: [u8; 4] = if is_hovered {
-                [180, 180, 80, 230] // Highlighted: BGRA
+                [100, 150, 220, 240] // Highlighted: BGRA blue
             } else {
-                [60, 60, 60, 230] // Normal: BGRA dark gray
+                [45, 45, 48, 240] // Normal: BGRA dark gray (GTK-like)
             };
 
             for y in item_y..(item_y + MENU_ITEM_HEIGHT).min(canvas_height) {
@@ -888,14 +917,19 @@ impl WaylandApp {
                 }
             }
 
-            // Draw simple text (using a basic pixel font approach)
-            let text_y = item_y + 6;
-            let text_x = menu_x + 10;
-            Self::draw_text_static(canvas, canvas_width, canvas_height, text_x, text_y, item, [255, 255, 255, 255]);
+            // Draw text using cosmic-text
+            let text_x = menu_x + 12;
+            let text_y = item_y + 5;
+            let text_color = if is_hovered {
+                [255, 255, 255, 255] // White when hovered
+            } else {
+                [220, 220, 220, 255] // Light gray normally
+            };
+            self.draw_text_cosmic(canvas, canvas_width, canvas_height, text_x, text_y, item, text_color);
         }
 
-        // Draw menu border
-        let border_color: [u8; 4] = [100, 100, 100, 255];
+        // Draw menu border with shadow effect
+        let border_color: [u8; 4] = [80, 80, 80, 255];
         let menu_height = menu_items.len() as u32 * MENU_ITEM_HEIGHT;
 
         // Top and bottom borders
@@ -925,197 +959,83 @@ impl WaylandApp {
         }
     }
 
-    /// Draw simple text (basic 5x7 pixel font) - static version
-    fn draw_text_static(canvas: &mut [u8], canvas_width: u32, canvas_height: u32, x: u32, y: u32, text: &str, color: [u8; 4]) {
-        // Simple bitmap font data for basic ASCII characters
-        let font: std::collections::HashMap<char, [[u8; 5]; 7]> = [
-            ('C', [
-                [0,1,1,1,0],
-                [1,0,0,0,1],
-                [1,0,0,0,0],
-                [1,0,0,0,0],
-                [1,0,0,0,0],
-                [1,0,0,0,1],
-                [0,1,1,1,0],
-            ]),
-            ('l', [
-                [1,0,0,0,0],
-                [1,0,0,0,0],
-                [1,0,0,0,0],
-                [1,0,0,0,0],
-                [1,0,0,0,0],
-                [1,0,0,0,0],
-                [1,1,1,0,0],
-            ]),
-            ('o', [
-                [0,0,0,0,0],
-                [0,0,0,0,0],
-                [0,1,1,1,0],
-                [1,0,0,0,1],
-                [1,0,0,0,1],
-                [1,0,0,0,1],
-                [0,1,1,1,0],
-            ]),
-            ('s', [
-                [0,0,0,0,0],
-                [0,0,0,0,0],
-                [0,1,1,1,0],
-                [1,0,0,0,0],
-                [0,1,1,0,0],
-                [0,0,0,1,0],
-                [1,1,1,0,0],
-            ]),
-            ('e', [
-                [0,0,0,0,0],
-                [0,0,0,0,0],
-                [0,1,1,0,0],
-                [1,0,0,1,0],
-                [1,1,1,1,0],
-                [1,0,0,0,0],
-                [0,1,1,1,0],
-            ]),
-            ('p', [
-                [0,0,0,0,0],
-                [0,0,0,0,0],
-                [1,1,1,1,0],
-                [1,0,0,0,1],
-                [1,1,1,1,0],
-                [1,0,0,0,0],
-                [1,0,0,0,0],
-            ]),
-            ('y', [
-                [0,0,0,0,0],
-                [0,0,0,0,0],
-                [1,0,0,0,1],
-                [1,0,0,0,1],
-                [0,1,1,1,1],
-                [0,0,0,0,1],
-                [0,1,1,1,0],
-            ]),
-            ('t', [
-                [0,1,0,0,0],
-                [0,1,0,0,0],
-                [1,1,1,0,0],
-                [0,1,0,0,0],
-                [0,1,0,0,0],
-                [0,1,0,0,0],
-                [0,0,1,1,0],
-            ]),
-            ('O', [
-                [0,1,1,1,0],
-                [1,0,0,0,1],
-                [1,0,0,0,1],
-                [1,0,0,0,1],
-                [1,0,0,0,1],
-                [1,0,0,0,1],
-                [0,1,1,1,0],
-            ]),
-            ('a', [
-                [0,0,0,0,0],
-                [0,0,0,0,0],
-                [0,1,1,1,0],
-                [0,0,0,0,1],
-                [0,1,1,1,1],
-                [1,0,0,0,1],
-                [0,1,1,1,1],
-            ]),
-            ('c', [
-                [0,0,0,0,0],
-                [0,0,0,0,0],
-                [0,1,1,1,0],
-                [1,0,0,0,0],
-                [1,0,0,0,0],
-                [1,0,0,0,0],
-                [0,1,1,1,0],
-            ]),
-            ('i', [
-                [0,1,0,0,0],
-                [0,0,0,0,0],
-                [1,1,0,0,0],
-                [0,1,0,0,0],
-                [0,1,0,0,0],
-                [0,1,0,0,0],
-                [1,1,1,0,0],
-            ]),
-            ('+', [
-                [0,0,0,0,0],
-                [0,0,1,0,0],
-                [0,0,1,0,0],
-                [1,1,1,1,1],
-                [0,0,1,0,0],
-                [0,0,1,0,0],
-                [0,0,0,0,0],
-            ]),
-            ('-', [
-                [0,0,0,0,0],
-                [0,0,0,0,0],
-                [0,0,0,0,0],
-                [1,1,1,1,1],
-                [0,0,0,0,0],
-                [0,0,0,0,0],
-                [0,0,0,0,0],
-            ]),
-            (' ', [
-                [0,0,0,0,0],
-                [0,0,0,0,0],
-                [0,0,0,0,0],
-                [0,0,0,0,0],
-                [0,0,0,0,0],
-                [0,0,0,0,0],
-                [0,0,0,0,0],
-            ]),
-            ('b', [
-                [1,0,0,0,0],
-                [1,0,0,0,0],
-                [1,1,1,0,0],
-                [1,0,0,1,0],
-                [1,0,0,1,0],
-                [1,0,0,1,0],
-                [1,1,1,0,0],
-            ]),
-            ('d', [
-                [0,0,0,1,0],
-                [0,0,0,1,0],
-                [0,1,1,1,0],
-                [1,0,0,1,0],
-                [1,0,0,1,0],
-                [1,0,0,1,0],
-                [0,1,1,1,0],
-            ]),
-            ('r', [
-                [0,0,0,0,0],
-                [0,0,0,0,0],
-                [1,0,1,1,0],
-                [1,1,0,0,0],
-                [1,0,0,0,0],
-                [1,0,0,0,0],
-                [1,0,0,0,0],
-            ]),
-        ].iter().cloned().collect();
+    /// Draw text using cosmic-text for proper font rendering
+    fn draw_text_cosmic(
+        &mut self,
+        canvas: &mut [u8],
+        canvas_width: u32,
+        canvas_height: u32,
+        x: u32,
+        y: u32,
+        text: &str,
+        color: [u8; 4],
+    ) {
+        let mut buffer = Buffer::new(&mut self.font_system, self.menu_text_metrics);
+        buffer.set_size(
+            &mut self.font_system,
+            Some(MENU_WIDTH as f32 - 24.0),
+            Some(MENU_ITEM_HEIGHT as f32),
+        );
+        buffer.set_text(
+            &mut self.font_system,
+            text,
+            self.menu_text_attrs.as_attrs(),
+            Shaping::Advanced,
+        );
+        buffer.shape_until_scroll(&mut self.font_system, false);
 
-        let mut cx = x;
-        for ch in text.chars() {
-            if let Some(glyph) = font.get(&ch) {
-                for (row, line) in glyph.iter().enumerate() {
-                    for (col, &pixel) in line.iter().enumerate() {
-                        if pixel == 1 {
-                            let px = cx + col as u32;
-                            let py = y + row as u32;
-                            if px < canvas_width && py < canvas_height {
-                                let idx = ((py * canvas_width + px) * 4) as usize;
-                                if idx + 3 < canvas.len() {
-                                    canvas[idx] = color[0];
-                                    canvas[idx + 1] = color[1];
-                                    canvas[idx + 2] = color[2];
-                                    canvas[idx + 3] = color[3];
-                                }
-                            }
-                        }
-                    }
+        let rgba = TextColor::rgba(color[2], color[1], color[0], color[3]);
+        let origin_x = x as i32;
+        let origin_y = y as i32;
+
+        buffer.draw(
+            &mut self.font_system,
+            &mut self.swash_cache,
+            rgba,
+            |px, py, _w, _h, glyph_color| {
+                let pixel_x = origin_x + px;
+                let pixel_y = origin_y + py;
+
+                if pixel_x < 0
+                    || pixel_x >= canvas_width as i32
+                    || pixel_y < 0
+                    || pixel_y >= canvas_height as i32
+                {
+                    return;
                 }
-            }
-            cx += 6; // Character width + spacing
-        }
+
+                let idx = ((pixel_y as u32 * canvas_width + pixel_x as u32) * 4) as usize;
+                if idx + 3 >= canvas.len() {
+                    return;
+                }
+
+                let [r, g, b, a] = glyph_color.as_rgba();
+                let src = [b, g, r, a];
+
+                let src_alpha = src[3] as f32 / 255.0;
+                if src_alpha <= 0.0 {
+                    return;
+                }
+                let dst_alpha = canvas[idx + 3] as f32 / 255.0;
+                let out_alpha = src_alpha + dst_alpha * (1.0 - src_alpha);
+                if out_alpha <= 0.0 {
+                    return;
+                }
+
+                let blend = |src_channel: u8, dst_channel: u8| -> u8 {
+                    ((src_channel as f32 * src_alpha
+                        + dst_channel as f32 * dst_alpha * (1.0 - src_alpha))
+                        / out_alpha)
+                        .round()
+                        .clamp(0.0, 255.0) as u8
+                };
+
+                canvas[idx] = blend(src[0], canvas[idx]);
+                canvas[idx + 1] = blend(src[1], canvas[idx + 1]);
+                canvas[idx + 2] = blend(src[2], canvas[idx + 2]);
+                canvas[idx + 3] = (out_alpha * 255.0) as u8;
+            },
+        );
     }
 
     /// Render resize border indicator (static version)
@@ -1312,9 +1232,21 @@ impl SeatHandler for WaylandApp {
                 error!("Failed to get keyboard: {}", e);
             }
         }
-        if capability == Capability::Pointer {
-            if let Err(e) = self.seat_state.get_pointer(qh, &seat) {
-                error!("Failed to get pointer: {}", e);
+        if capability == Capability::Pointer && self.themed_pointer.is_none() {
+            debug!("Creating themed pointer");
+            let surface = self.compositor_state.create_surface(qh);
+            match self.seat_state.get_pointer_with_theme(
+                qh,
+                &seat,
+                self.shm.wl_shm(),
+                surface,
+                ThemeSpec::default(),
+            ) {
+                Ok(pointer) => {
+                    self.themed_pointer = Some(pointer);
+                    debug!("Themed pointer created successfully");
+                }
+                Err(e) => error!("Failed to create themed pointer: {}", e),
             }
         }
     }
@@ -1410,6 +1342,7 @@ impl PointerHandler for WaylandApp {
             match event.kind {
                 PointerEventKind::Enter { .. } => {
                     debug!("Pointer entered");
+                    self.set_cursor_on_next_frame = Some(CursorIcon::Default);
                 }
                 PointerEventKind::Leave { .. } => {
                     debug!("Pointer left");
@@ -1427,6 +1360,19 @@ impl PointerHandler for WaylandApp {
                         if prev_hover != self.menu_hover_item {
                             self.needs_redraw = true;
                         }
+                        // Set default cursor when over menu
+                        self.set_cursor_on_next_frame = Some(CursorIcon::Default);
+                    } else if !self.dragging && !self.resizing {
+                        // Update cursor based on resize edge detection
+                        let edge = self.detect_resize_edge(x, y);
+                        let cursor_icon = match edge {
+                            ResizeEdge::Top | ResizeEdge::Bottom => CursorIcon::NsResize,
+                            ResizeEdge::Left | ResizeEdge::Right => CursorIcon::EwResize,
+                            ResizeEdge::TopLeft | ResizeEdge::BottomRight => CursorIcon::NwseResize,
+                            ResizeEdge::TopRight | ResizeEdge::BottomLeft => CursorIcon::NeswResize,
+                            ResizeEdge::None => CursorIcon::Default,
+                        };
+                        self.set_cursor_on_next_frame = Some(cursor_icon);
                     }
 
                     // Handle dragging (window move)
@@ -1678,6 +1624,13 @@ impl PointerHandler for WaylandApp {
                         self.draw(qh);
                     }
                 }
+            }
+        }
+
+        // Update cursor at the end of the frame
+        if let Some(cursor_icon) = self.set_cursor_on_next_frame.take() {
+            if let Some(themed_pointer) = &self.themed_pointer {
+                let _ = themed_pointer.set_cursor(_conn, cursor_icon);
             }
         }
     }
