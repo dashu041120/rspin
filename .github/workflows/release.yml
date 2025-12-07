@@ -21,13 +21,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwayland-dev \
-            libxkbcommon-dev \
-            cargo-deb
+            libxkbcommon-dev
 
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
 
       - name: Build DEB package
         run: cargo deb
@@ -52,8 +54,10 @@ jobs:
             rust cargo \
             wayland-devel \
             libxkbcommon-devel \
-            rpm-build \
-            cargo-generate-rpm
+            rpm-build
+
+      - name: Install cargo-generate-rpm
+        run: cargo install cargo-generate-rpm
 
       - name: Build release binary
         run: cargo build --release
@@ -84,12 +88,19 @@ jobs:
             cargo \
             wayland \
             libxkbcommon \
-            git
+            git \
+            sudo
+
+      - name: Create build user
+        run: |
+          useradd -m builduser
+          echo "builduser ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+          chown -R builduser:builduser .
 
       - name: Build PKGBUILD
         run: |
           cd packaging/arch
-          makepkg -sf --noconfirm
+          su builduser -c "makepkg -sf --noconfirm"
 
       - name: Upload Arch package
         uses: actions/upload-artifact@v4
