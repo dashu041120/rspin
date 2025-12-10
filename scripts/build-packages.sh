@@ -55,7 +55,7 @@ fi
 
 # Build tar.gz portable package
 echo -e "${BLUE}==> Building portable tar.gz package...${NC}"
-TARBALL_NAME="rspin-${CARGO_PKG_VERSION:-0.1.0}-x86_64-linux"
+TARBALL_NAME="rspin-${CARGO_PKG_VERSION:-0.1.1}-x86_64-linux"
 TARBALL_DIR="dist/$TARBALL_NAME"
 rm -rf "$TARBALL_DIR"
 mkdir -p "$TARBALL_DIR"

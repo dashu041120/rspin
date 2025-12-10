@@ -7,8 +7,8 @@ This directory contains packaging configurations for different Linux distributio
 Packages are automatically built on GitHub Actions when you push a tag:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 The workflow will build DEB, RPM, and Arch packages and attach them to the GitHub release.

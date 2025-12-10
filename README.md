@@ -124,33 +124,33 @@ window-rule {
 
 ```bash
 # Download from releases page
-wget https://github.com/dashu041120/rspin/releases/download/v0.1.0/rspin_0.1.0_amd64.deb
-sudo dpkg -i rspin_0.1.0_amd64.deb
+wget https://github.com/dashu041120/rspin/releases/download/v0.1.1/rspin_0.1.1_amd64.deb
+sudo dpkg -i rspin_0.1.1_amd64.deb
 ```
 
 **Fedora/RHEL (RPM):**
 
 ```bash
 # Download from releases page
-wget https://github.com/dashu041120/rspin/releases/download/v0.1.0/rspin-0.1.0-1.x86_64.rpm
-sudo dnf install rspin-0.1.0-1.x86_64.rpm
+wget https://github.com/dashu041120/rspin/releases/download/v0.1.1/rspin-0.1.1-1.x86_64.rpm
+sudo dnf install rspin-0.1.1-1.x86_64.rpm
 ```
 
 **Arch Linux:**
 
 ```bash
 # Download from releases page
-wget https://github.com/dashu041120/rspin/releases/download/v0.1.0/rspin-0.1.0-1-x86_64.pkg.tar.zst
-sudo pacman -U rspin-0.1.0-1-x86_64.pkg.tar.zst
+wget https://github.com/dashu041120/rspin/releases/download/v0.1.1/rspin-0.1.1-1-x86_64.pkg.tar.zst
+sudo pacman -U rspin-0.1.1-1-x86_64.pkg.tar.zst
 ```
 
 **Portable (any Linux):**
 
 ```bash
 # Download tarball from releases page
-wget https://github.com/dashu041120/rspin/releases/download/v0.1.0/rspin-0.1.0-x86_64-linux.tar.gz
-tar xzf rspin-0.1.0-x86_64-linux.tar.gz
-cd rspin-0.1.0-x86_64-linux
+wget https://github.com/dashu041120/rspin/releases/download/v0.1.1/rspin-0.1.1-x86_64-linux.tar.gz
+tar xzf rspin-0.1.1-x86_64-linux.tar.gz
+cd rspin-0.1.1-x86_64-linux
 ./install.sh  # Installs to ~/.local/bin
 ```
 

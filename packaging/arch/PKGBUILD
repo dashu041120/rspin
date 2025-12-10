@@ -1,6 +1,6 @@
 # Maintainer: dashu041120
 pkgname=rspin
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="A desktop sticky image viewer for Wayland"
 arch=('x86_64')
