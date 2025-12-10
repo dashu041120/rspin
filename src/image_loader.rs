@@ -125,31 +125,31 @@ fn generate_mipmaps(width: u32, height: u32, data: &[u8]) -> Vec<MipmapLevel> {
     {
         let next_width = current_width / 2;
         let next_height = current_height / 2;
-        
+
         if next_width < 32 || next_height < 32 {
             break;
         }
 
         // Downsample using box filter (2x2 average)
         let mut next_data = vec![0u8; (next_width * next_height * 4) as usize];
-        
+
         for y in 0..next_height {
             for x in 0..next_width {
                 let src_x = x * 2;
                 let src_y = y * 2;
-                
+
                 // Average 2x2 block
                 let mut r = 0u32;
                 let mut g = 0u32;
                 let mut b = 0u32;
                 let mut a = 0u32;
-                
+
                 for dy in 0..2 {
                     for dx in 0..2 {
                         let sx = (src_x + dx).min(current_width - 1);
                         let sy = (src_y + dy).min(current_height - 1);
                         let idx = ((sy * current_width + sx) * 4) as usize;
-                        
+
                         if idx + 3 < current_data.len() {
                             b += current_data[idx] as u32;
                             g += current_data[idx + 1] as u32;
@@ -158,7 +158,7 @@ fn generate_mipmaps(width: u32, height: u32, data: &[u8]) -> Vec<MipmapLevel> {
                         }
                     }
                 }
-                
+
                 let dst_idx = ((y * next_width + x) * 4) as usize;
                 if dst_idx + 3 < next_data.len() {
                     next_data[dst_idx] = (b / 4) as u8;
@@ -168,18 +168,18 @@ fn generate_mipmaps(width: u32, height: u32, data: &[u8]) -> Vec<MipmapLevel> {
                 }
             }
         }
-        
+
         mipmaps.push(MipmapLevel {
             width: next_width,
             height: next_height,
             data: next_data.clone(),
         });
-        
+
         current_width = next_width;
         current_height = next_height;
         current_data = next_data;
     }
-    
+
     mipmaps
 }
 

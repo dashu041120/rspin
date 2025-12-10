@@ -25,6 +25,7 @@ A desktop sticky image viewer for Wayland compositors.
 
 - Always-on-top Wayland overlay window implemented with `wlr-layer-shell`
 - GPU rendering via `wgpu` with a CPU fallback that shares the same layer-shell surface
+- Deferred GPU initialization so the first frame appears instantly even when GPU mode is enabled
 - Context menu rendered directly on the GPU (no more CPU fallback/blur when it is open)
 - Auto-limits the initial size to **10% of the screen area** and never allows scaling beyond 100% of the active display
 - Transparent window with scroll-wheel opacity control

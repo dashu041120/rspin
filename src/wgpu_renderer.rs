@@ -5,9 +5,7 @@ use crate::image_loader::ImageData;
 use anyhow::{Context, Result};
 use log::{debug, info, warn};
 use std::ptr::NonNull;
-use wgpu::rwh::{
-    RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
-};
+use wgpu::rwh::{RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle};
 use wgpu::util::DeviceExt;
 
 // Maximum surface size to prevent GPU memory issues
@@ -106,14 +104,12 @@ impl WgpuRenderer {
     ) -> Result<Self> {
         info!("Initializing wgpu renderer with size {}x{}", width, height);
 
-        let display_non_null = NonNull::new(display_ptr)
-            .context("Display pointer is null")?;
-        let surface_non_null = NonNull::new(surface_ptr)
-            .context("Surface pointer is null")?;
+        let display_non_null = NonNull::new(display_ptr).context("Display pointer is null")?;
+        let surface_non_null = NonNull::new(surface_ptr).context("Surface pointer is null")?;
 
         let raw_display_handle =
             RawDisplayHandle::Wayland(WaylandDisplayHandle::new(display_non_null));
-        let raw_window_handle = 
+        let raw_window_handle =
             RawWindowHandle::Wayland(WaylandWindowHandle::new(surface_non_null));
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -348,10 +344,10 @@ impl WgpuRenderer {
             render_pipeline,
             texture: None,
             texture_bind_group: None,
-             overlay_texture: None,
-             overlay_texture_bind_group: None,
-             overlay_viewport: None,
-             sampler,
+            overlay_texture: None,
+            overlay_texture_bind_group: None,
+            overlay_viewport: None,
+            sampler,
             vertex_buffer,
             index_buffer,
             uniform_buffer,
@@ -384,7 +380,10 @@ impl WgpuRenderer {
     pub fn upload_texture(&mut self, image: &ImageData) -> Result<()> {
         // Clamp texture size to device limits
         let tex_width = image.width.min(MAX_TEXTURE_SIZE).min(self.max_texture_size);
-        let tex_height = image.height.min(MAX_TEXTURE_SIZE).min(self.max_texture_size);
+        let tex_height = image
+            .height
+            .min(MAX_TEXTURE_SIZE)
+            .min(self.max_texture_size);
 
         debug!(
             "Uploading texture: {}x{} (clamped from {}x{})",
@@ -581,19 +580,13 @@ impl WgpuRenderer {
             render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            render_pass.set_viewport(
-                0.0,
-                0.0,
-                self.width as f32,
-                self.height as f32,
-                0.0,
-                1.0,
-            );
+            render_pass.set_viewport(0.0, 0.0, self.width as f32, self.height as f32, 0.0, 1.0);
             render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..1);
 
-            if let (Some(overlay_bind_group), Some(viewport)) =
-                (self.overlay_texture_bind_group.as_ref(), self.overlay_viewport)
-            {
+            if let (Some(overlay_bind_group), Some(viewport)) = (
+                self.overlay_texture_bind_group.as_ref(),
+                self.overlay_viewport,
+            ) {
                 render_pass.set_viewport(
                     viewport[0],
                     viewport[1],

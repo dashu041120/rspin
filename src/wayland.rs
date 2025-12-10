@@ -4,8 +4,11 @@
 use crate::image_loader::ImageData;
 use crate::wgpu_renderer::WgpuRenderer;
 use anyhow::{Context, Result};
+use cosmic_text::{
+    fontdb, Attrs, AttrsOwned, Buffer, Color as TextColor, Family, FontSystem, Metrics, Shaping,
+    SwashCache,
+};
 use log::{debug, error, info, warn};
-use cosmic_text::{Attrs, AttrsOwned, Buffer, FontSystem, Metrics, Shaping, SwashCache, Color as TextColor, Family, fontdb};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
@@ -15,7 +18,9 @@ use smithay_client_toolkit::{
     registry_handlers,
     seat::{
         keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
-        pointer::{CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemedPointer, ThemeSpec},
+        pointer::{
+            CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer,
+        },
         Capability, SeatHandler, SeatState,
     },
     shell::{
@@ -181,6 +186,7 @@ struct WaylandApp {
     use_gpu: bool,
     gpu_renderer: Option<WgpuRenderer>,
     gpu_initialized: bool,
+    gpu_init_pending: bool,
 
     // Text rendering (lazy loaded to save memory)
     font_system: Option<FontSystem>,
@@ -252,7 +258,8 @@ impl WaylandApp {
             use_gpu,
             gpu_renderer: None,
             gpu_initialized: false,
-            font_system: None,  // Lazy loaded when menu is first shown
+            gpu_init_pending: false,
+            font_system: None, // Lazy loaded when menu is first shown
             swash_cache: None,
             menu_text_attrs,
             menu_text_metrics,
@@ -433,7 +440,10 @@ impl WaylandApp {
                         info!("Image copied to clipboard via xclip");
                     }
                     Err(e) => {
-                        error!("Failed to copy to clipboard: {}. Install wl-copy or xclip.", e);
+                        error!(
+                            "Failed to copy to clipboard: {}. Install wl-copy or xclip.",
+                            e
+                        );
                     }
                 }
             }
@@ -461,7 +471,7 @@ impl WaylandApp {
         let max_height = self.display_height.max(MIN_SIZE).min(MAX_SIZE);
         self.width = self.width.clamp(MIN_SIZE, max_width);
         self.height = self.height.clamp(MIN_SIZE, max_height);
-        
+
         if self.resizing {
             if let Some(last_draw) = self.last_resize_draw {
                 let elapsed = last_draw.elapsed().as_millis();
@@ -535,7 +545,10 @@ impl WaylandApp {
 
                 // Release raw image data to save memory since GPU has its own copy
                 let freed = self.image.release_raw_data();
-                info!("Released {} bytes of CPU image data after GPU upload", freed);
+                info!(
+                    "Released {} bytes of CPU image data after GPU upload",
+                    freed
+                );
 
                 // Also clear CPU rendering caches
                 self.cached_scaled_image = None;
@@ -546,6 +559,29 @@ impl WaylandApp {
                 warn!("Falling back to CPU rendering");
                 self.use_gpu = false;
             }
+        }
+    }
+
+    /// Mark GPU initialization to run after the first frame is displayed
+    fn request_gpu_init(&mut self) {
+        if self.use_gpu && !self.gpu_initialized {
+            self.gpu_init_pending = true;
+        }
+    }
+
+    /// Execute pending GPU initialization work outside of critical event handlers
+    fn process_gpu_init(&mut self, qh: &QueueHandle<Self>) {
+        if !self.use_gpu || self.gpu_initialized || !self.gpu_init_pending {
+            return;
+        }
+
+        self.init_gpu_renderer();
+        self.gpu_init_pending = false;
+
+        if self.use_gpu && self.gpu_initialized {
+            // Re-render so the GPU texture path becomes active immediately
+            self.needs_redraw = true;
+            self.draw(qh);
         }
     }
 
@@ -642,8 +678,8 @@ impl WaylandApp {
         let menu_y = menu_pos.1.max(0).min(surface_height as i32 - 1).max(0);
 
         let menu_width = MENU_WIDTH.min(surface_width.saturating_sub(menu_x as u32));
-        let menu_height =
-            (menu_items.len() as u32 * MENU_ITEM_HEIGHT).min(surface_height.saturating_sub(menu_y as u32));
+        let menu_height = (menu_items.len() as u32 * MENU_ITEM_HEIGHT)
+            .min(surface_height.saturating_sub(menu_y as u32));
 
         if menu_width == 0 || menu_height == 0 {
             if let Some(renderer) = self.gpu_renderer.as_mut() {
@@ -653,7 +689,13 @@ impl WaylandApp {
         }
 
         let mut buffer = vec![0u8; (menu_width * menu_height * 4) as usize];
-        self.render_menu_overlay_contents(&mut buffer, menu_width, menu_height, menu_hover_item, menu_items);
+        self.render_menu_overlay_contents(
+            &mut buffer,
+            menu_width,
+            menu_height,
+            menu_hover_item,
+            menu_items,
+        );
         for pixel in buffer.chunks_exact_mut(4) {
             pixel.swap(0, 2);
         }
@@ -666,7 +708,9 @@ impl WaylandApp {
         ];
 
         if let Some(renderer) = self.gpu_renderer.as_mut() {
-            if let Err(e) = renderer.update_overlay_texture(menu_width, menu_height, viewport, &buffer) {
+            if let Err(e) =
+                renderer.update_overlay_texture(menu_width, menu_height, viewport, &buffer)
+            {
                 warn!("Failed to upload menu overlay: {:?}", e);
             }
         }
@@ -687,7 +731,10 @@ impl WaylandApp {
 
         // Check if buffer size is reasonable
         if buffer_size > MAX_BUFFER_SIZE {
-            error!("Buffer size too large: {} bytes, max: {} bytes", buffer_size, MAX_BUFFER_SIZE);
+            error!(
+                "Buffer size too large: {} bytes, max: {} bytes",
+                buffer_size, MAX_BUFFER_SIZE
+            );
             // Scale down to fit
             let scale = (MAX_BUFFER_SIZE as f32 / buffer_size as f32).sqrt();
             self.width = (width as f32 * scale) as u32;
@@ -706,6 +753,7 @@ impl WaylandApp {
         } else {
             vec![]
         };
+        let fast_boot_preview = self.use_gpu && !self.gpu_initialized;
 
         // Initialize pool if needed
         if self.pool.is_none() {
@@ -738,22 +786,25 @@ impl WaylandApp {
         }
 
         // Create buffer
-        let (buffer, canvas) =
-            match pool.create_buffer(width as i32, height as i32, stride, wl_shm::Format::Argb8888)
-            {
-                Ok(buf) => buf,
-                Err(e) => {
-                    error!("Failed to create buffer {}x{}: {}", width, height, e);
-                    self.pool = Some(pool);
-                    return;
-                }
-            };
+        let (buffer, canvas) = match pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
+            Ok(buf) => buf,
+            Err(e) => {
+                error!("Failed to create buffer {}x{}: {}", width, height, e);
+                self.pool = Some(pool);
+                return;
+            }
+        };
 
         let cache_enabled = !self.use_gpu;
 
         // Choose rendering method based on whether we're resizing
-        if is_resizing {
-            // Use fast nearest-neighbor during resize for responsiveness
+        if is_resizing || fast_boot_preview {
+            // Use fast nearest-neighbor during resize or before GPU is ready
             Self::render_image_fast(&self.image, canvas, width, height, opacity);
         } else if cache_enabled {
             // Use high-quality bilinear interpolation when not resizing
@@ -800,10 +851,17 @@ impl WaylandApp {
     }
 
     /// Render the image to the canvas (static version to avoid borrow issues)
-    fn render_image_static(image: &ImageData, canvas: &mut [u8], width: u32, height: u32, opacity: f32) {
+    fn render_image_static(
+        image: &ImageData,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        opacity: f32,
+    ) {
         // Choose best mipmap level for quality rendering
-        let scale_ratio = (width as f32 / image.width as f32).min(height as f32 / image.height as f32);
-        
+        let scale_ratio =
+            (width as f32 / image.width as f32).min(height as f32 / image.height as f32);
+
         let (img_width, img_height, src_data) = if scale_ratio < 0.7 && !image.mipmaps.is_empty() {
             // Find the best mipmap level (choose one slightly larger than needed)
             let mut best_level = 0;
@@ -815,11 +873,11 @@ impl WaylandApp {
                 }
                 best_level = i;
             }
-            
+
             if best_level >= image.mipmaps.len() {
                 best_level = image.mipmaps.len() - 1;
             }
-            
+
             if best_level > 0 && best_level <= image.mipmaps.len() {
                 let mipmap = &image.mipmaps[best_level - 1];
                 (mipmap.width, mipmap.height, &mipmap.data[..])
@@ -903,11 +961,18 @@ impl WaylandApp {
     }
 
     /// Fast nearest-neighbor rendering for responsive resize with mipmap optimization
-    fn render_image_fast(image: &ImageData, canvas: &mut [u8], width: u32, height: u32, opacity: f32) {
+    fn render_image_fast(
+        image: &ImageData,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        opacity: f32,
+    ) {
         // Choose best mipmap level based on target size
         // Use mipmap when downscaling significantly for better performance
-        let scale_ratio = (width as f32 / image.width as f32).min(height as f32 / image.height as f32);
-        
+        let scale_ratio =
+            (width as f32 / image.width as f32).min(height as f32 / image.height as f32);
+
         let (img_width, img_height, src_data) = if scale_ratio < 0.5 && !image.mipmaps.is_empty() {
             // Find the best mipmap level
             let mut best_level = 0;
@@ -919,7 +984,7 @@ impl WaylandApp {
                 }
                 best_level = i;
             }
-            
+
             let mipmap = &image.mipmaps[best_level];
             (mipmap.width, mipmap.height, &mipmap.data[..])
         } else {
@@ -980,7 +1045,15 @@ impl WaylandApp {
     }
 
     /// Render the context menu (static version)
-    fn render_menu(&mut self, canvas: &mut [u8], canvas_width: u32, canvas_height: u32, menu_pos: (i32, i32), menu_hover_item: Option<usize>, menu_items: &[&str]) {
+    fn render_menu(
+        &mut self,
+        canvas: &mut [u8],
+        canvas_width: u32,
+        canvas_height: u32,
+        menu_pos: (i32, i32),
+        menu_hover_item: Option<usize>,
+        menu_items: &[&str],
+    ) {
         let menu_x = menu_pos.0.max(0) as u32;
         let menu_y = menu_pos.1.max(0) as u32;
 
@@ -1015,7 +1088,15 @@ impl WaylandApp {
             } else {
                 [220, 220, 220, 255] // Light gray normally
             };
-            self.draw_text_cosmic(canvas, canvas_width, canvas_height, text_x, text_y, item, text_color);
+            self.draw_text_cosmic(
+                canvas,
+                canvas_width,
+                canvas_height,
+                text_x,
+                text_y,
+                item,
+                text_color,
+            );
         }
 
         // Draw menu border with shadow effect
@@ -1090,7 +1171,15 @@ impl WaylandApp {
             } else {
                 [220, 220, 220, 255]
             };
-            self.draw_text_cosmic(canvas, canvas_width, canvas_height, text_x, text_y, item, text_color);
+            self.draw_text_cosmic(
+                canvas,
+                canvas_width,
+                canvas_height,
+                text_x,
+                text_y,
+                item,
+                text_color,
+            );
         }
 
         let border_color: [u8; 4] = [80, 80, 80, 255];
@@ -1135,10 +1224,10 @@ impl WaylandApp {
         // Lazy initialize font system when first needed
         if self.font_system.is_none() {
             info!("Initializing font system for menu rendering...");
-            
+
             // Create a minimal font database with only the fonts we need
             let mut db = fontdb::Database::new();
-            
+
             // Load text font (try multiple paths for different distros)
             let text_font_paths = [
                 "/usr/share/fonts/noto/NotoSans-Regular.ttf",
@@ -1149,7 +1238,7 @@ impl WaylandApp {
                 "/usr/share/fonts/dejavu/DejaVuSans.ttf",
                 "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
             ];
-            
+
             let mut text_loaded = false;
             for path in &text_font_paths {
                 if std::path::Path::new(path).exists() {
@@ -1160,7 +1249,7 @@ impl WaylandApp {
                     }
                 }
             }
-            
+
             // Load emoji font for menu icons
             let emoji_font_paths = [
                 "/usr/share/fonts/noto/NotoColorEmoji.ttf",
@@ -1169,7 +1258,7 @@ impl WaylandApp {
                 "/usr/share/fonts/TTF/NotoColorEmoji.ttf",
                 "/usr/share/fonts/noto-emoji/NotoColorEmoji.ttf",
             ];
-            
+
             for path in &emoji_font_paths {
                 if std::path::Path::new(path).exists() {
                     if db.load_font_file(path).is_ok() {
@@ -1178,13 +1267,13 @@ impl WaylandApp {
                     }
                 }
             }
-            
+
             // Fallback: load system fonts only if no text font found
             if !text_loaded {
                 warn!("No preferred font found, loading system fonts...");
                 db.load_system_fonts();
             }
-            
+
             let font_system = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
             self.font_system = Some(font_system);
             self.swash_cache = Some(SwashCache::new());
@@ -1274,19 +1363,68 @@ impl WaylandApp {
             Self::draw_pixel(canvas, width, height, i, 0, border_color);
             Self::draw_pixel(canvas, width, height, 0, i, border_color);
             // Top-right
-            Self::draw_pixel(canvas, width, height, width.saturating_sub(1).saturating_sub(i), 0, border_color);
-            Self::draw_pixel(canvas, width, height, width.saturating_sub(1), i, border_color);
+            Self::draw_pixel(
+                canvas,
+                width,
+                height,
+                width.saturating_sub(1).saturating_sub(i),
+                0,
+                border_color,
+            );
+            Self::draw_pixel(
+                canvas,
+                width,
+                height,
+                width.saturating_sub(1),
+                i,
+                border_color,
+            );
             // Bottom-left
-            Self::draw_pixel(canvas, width, height, i, height.saturating_sub(1), border_color);
-            Self::draw_pixel(canvas, width, height, 0, height.saturating_sub(1).saturating_sub(i), border_color);
+            Self::draw_pixel(
+                canvas,
+                width,
+                height,
+                i,
+                height.saturating_sub(1),
+                border_color,
+            );
+            Self::draw_pixel(
+                canvas,
+                width,
+                height,
+                0,
+                height.saturating_sub(1).saturating_sub(i),
+                border_color,
+            );
             // Bottom-right
-            Self::draw_pixel(canvas, width, height, width.saturating_sub(1).saturating_sub(i), height.saturating_sub(1), border_color);
-            Self::draw_pixel(canvas, width, height, width.saturating_sub(1), height.saturating_sub(1).saturating_sub(i), border_color);
+            Self::draw_pixel(
+                canvas,
+                width,
+                height,
+                width.saturating_sub(1).saturating_sub(i),
+                height.saturating_sub(1),
+                border_color,
+            );
+            Self::draw_pixel(
+                canvas,
+                width,
+                height,
+                width.saturating_sub(1),
+                height.saturating_sub(1).saturating_sub(i),
+                border_color,
+            );
         }
     }
 
     /// Helper to draw a single pixel
-    fn draw_pixel(canvas: &mut [u8], canvas_width: u32, canvas_height: u32, x: u32, y: u32, color: [u8; 4]) {
+    fn draw_pixel(
+        canvas: &mut [u8],
+        canvas_width: u32,
+        canvas_height: u32,
+        x: u32,
+        y: u32,
+        color: [u8; 4],
+    ) {
         if x < canvas_width && y < canvas_height {
             let idx = ((y * canvas_width + x) * 4) as usize;
             if idx + 3 < canvas.len() {
@@ -1422,13 +1560,11 @@ impl LayerShellHandler for WaylandApp {
         self.configured = true;
         self.needs_redraw = true;
 
-        // Initialize GPU renderer if requested and not yet initialized
-        if self.use_gpu && !self.gpu_initialized {
-            self.init_gpu_renderer();
-        }
-
         // Draw initial frame
         self.draw(qh);
+
+        // Initialize GPU after the first frame so startup feels instant
+        self.request_gpu_init();
     }
 }
 
@@ -1621,7 +1757,7 @@ impl PointerHandler for WaylandApp {
                         let keep_ratio = self.scale_mode == ScaleMode::KeepAspectRatio;
 
                         // Calculate new dimensions based on resize edge
-                        let (mut new_w, mut new_h, mut new_ml, mut new_mt) = 
+                        let (mut new_w, mut new_h, mut new_ml, mut new_mt) =
                             (start_w, start_h, start_ml, start_mt);
 
                         match self.resize_edge {
@@ -1642,7 +1778,9 @@ impl PointerHandler for WaylandApp {
                                     // Use the larger delta to determine scale
                                     let scale_by_x = (start_w as i32 + dx) as f32 / start_w as f32;
                                     let scale_by_y = (start_h as i32 + dy) as f32 / start_h as f32;
-                                    let scale = scale_by_x.max(scale_by_y).max(MIN_SIZE as f32 / start_w as f32);
+                                    let scale = scale_by_x
+                                        .max(scale_by_y)
+                                        .max(MIN_SIZE as f32 / start_w as f32);
                                     new_w = (start_w as f32 * scale) as u32;
                                     new_h = (start_h as f32 * scale) as u32;
                                 } else {
@@ -1678,7 +1816,9 @@ impl PointerHandler for WaylandApp {
                                 if keep_ratio {
                                     let scale_by_x = (start_w as i32 - dx) as f32 / start_w as f32;
                                     let scale_by_y = (start_h as i32 - dy) as f32 / start_h as f32;
-                                    let scale = scale_by_x.max(scale_by_y).max(MIN_SIZE as f32 / start_w as f32);
+                                    let scale = scale_by_x
+                                        .max(scale_by_y)
+                                        .max(MIN_SIZE as f32 / start_w as f32);
                                     new_w = (start_w as f32 * scale) as u32;
                                     new_h = (start_h as f32 * scale) as u32;
                                 } else {
@@ -1692,7 +1832,9 @@ impl PointerHandler for WaylandApp {
                                 if keep_ratio {
                                     let scale_by_x = (start_w as i32 + dx) as f32 / start_w as f32;
                                     let scale_by_y = (start_h as i32 - dy) as f32 / start_h as f32;
-                                    let scale = scale_by_x.max(scale_by_y).max(MIN_SIZE as f32 / start_w as f32);
+                                    let scale = scale_by_x
+                                        .max(scale_by_y)
+                                        .max(MIN_SIZE as f32 / start_w as f32);
                                     new_w = (start_w as f32 * scale) as u32;
                                     new_h = (start_h as f32 * scale) as u32;
                                 } else {
@@ -1705,7 +1847,9 @@ impl PointerHandler for WaylandApp {
                                 if keep_ratio {
                                     let scale_by_x = (start_w as i32 - dx) as f32 / start_w as f32;
                                     let scale_by_y = (start_h as i32 + dy) as f32 / start_h as f32;
-                                    let scale = scale_by_x.max(scale_by_y).max(MIN_SIZE as f32 / start_w as f32);
+                                    let scale = scale_by_x
+                                        .max(scale_by_y)
+                                        .max(MIN_SIZE as f32 / start_w as f32);
                                     new_w = (start_w as f32 * scale) as u32;
                                     new_h = (start_h as f32 * scale) as u32;
                                 } else {
@@ -1725,10 +1869,14 @@ impl PointerHandler for WaylandApp {
                         let potential_buffer_size = (new_w * new_h * 4) as usize;
                         if potential_buffer_size > MAX_BUFFER_SIZE {
                             // Scale down proportionally
-                            let scale = (MAX_BUFFER_SIZE as f32 / potential_buffer_size as f32).sqrt();
+                            let scale =
+                                (MAX_BUFFER_SIZE as f32 / potential_buffer_size as f32).sqrt();
                             new_w = (new_w as f32 * scale) as u32;
                             new_h = (new_h as f32 * scale) as u32;
-                            info!("Window size capped to {}x{} to prevent buffer overflow", new_w, new_h);
+                            info!(
+                                "Window size capped to {}x{} to prevent buffer overflow",
+                                new_w, new_h
+                            );
                         }
 
                         self.width = new_w;
@@ -1820,11 +1968,11 @@ impl PointerHandler for WaylandApp {
                     if button == BTN_LEFT {
                         // If we were resizing, trigger high quality redraw
                         let was_resizing = self.resizing;
-                        
+
                         self.dragging = false;
                         self.resizing = false;
                         self.resize_edge = ResizeEdge::None;
-                        
+
                         if was_resizing {
                             // Invalidate cache to force high-quality render
                             self.cached_scaled_image = None;
@@ -1833,10 +1981,7 @@ impl PointerHandler for WaylandApp {
                         }
                     }
                 }
-                PointerEventKind::Axis {
-                    vertical,
-                    ..
-                } => {
+                PointerEventKind::Axis { vertical, .. } => {
                     // Scroll wheel to adjust opacity
                     if vertical.absolute != 0.0 {
                         let delta = if vertical.absolute > 0.0 {
@@ -1949,13 +2094,9 @@ pub fn run(image: ImageData, opacity: f32, use_gpu: bool) -> Result<()> {
 
     // Create the layer surface
     let surface = app.compositor_state.create_surface(&qh);
-    let layer_surface = app.layer_shell.create_layer_surface(
-        &qh,
-        surface,
-        Layer::Overlay,
-        Some("rspin"),
-        None,
-    );
+    let layer_surface =
+        app.layer_shell
+            .create_layer_surface(&qh, surface, Layer::Overlay, Some("rspin"), None);
 
     // Configure the layer surface with anchoring for positioning
     layer_surface.set_anchor(Anchor::TOP | Anchor::LEFT);
@@ -1975,6 +2116,7 @@ pub fn run(image: ImageData, opacity: f32, use_gpu: bool) -> Result<()> {
     // Main event loop
     loop {
         event_queue.blocking_dispatch(&mut app)?;
+        app.process_gpu_init(&qh);
 
         if app.should_exit {
             info!("Exiting application");

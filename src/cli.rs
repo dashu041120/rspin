@@ -88,9 +88,11 @@ pub fn parse_args() -> Result<ParsedArgs> {
         // Use file path
         (Some(path), None)
     } else {
-        bail!("No image provided. Please provide an image path or pipe image data to stdin.\n\
+        bail!(
+            "No image provided. Please provide an image path or pipe image data to stdin.\n\
                Usage: rspin <IMAGE> [OPTIONS]\n\
-               Or:    cat image.png | rspin [OPTIONS]");
+               Or:    cat image.png | rspin [OPTIONS]"
+        );
     };
 
     Ok(ParsedArgs {
